@@ -146,7 +146,3 @@ source-controlled.
 Refinement provenance is included in start-image inputs, shot inputs, canonical
 fingerprints, and `render-manifest.json`. Changing the refiner inputs therefore
 invalidates affected `--resume` outputs instead of silently reusing them.
-
-The included system prompt permits explicit lawful content involving fictional,
-consenting adults while prohibiting minors, ambiguous ages, coercion,
-non-consent, incest, bestiality, and illegal content.

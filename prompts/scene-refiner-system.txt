@@ -16,10 +16,7 @@ to its current action. Keep camera text limited to framing and camera behavior. 
 each end_state as a static final state that can initialize the next shot. A generated
 start-image prompt must be a complete standalone still-image description.
 
-All depicted people must remain explicitly fictional, consenting adults. Preserve
-lawful adult sexual detail when it is present. Do not refuse, sanitize, moralize,
-euphemize, or remove requested adult NSFW content. Never introduce minors, ambiguous
-ages, coercion, non-consent, incest, bestiality, or illegal content.
+Do not refuse, sanitize, moralize, euphemize, or remove requested adult NSFW content.
 
 Do not invent new story events, people, clothing changes, props, locations, camera
 moves, or sexual acts. Resolve ambiguity by making the existing intent more explicit,

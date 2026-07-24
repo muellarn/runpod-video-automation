@@ -44,7 +44,7 @@
   "6": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "An uncropped head-to-toe documentary photograph of one fictional adult woman standing in a bedroom",
+      "text": "An uncropped head-to-toe documentary photograph of one woman standing in a bedroom",
       "clip": [
         "11",
         0
