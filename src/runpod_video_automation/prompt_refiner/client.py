@@ -40,15 +40,32 @@ class KoboldClient:
         user_prompt: str,
         profile: PromptRefinerProfile,
     ) -> str:
+        return self.chat_messages(
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            profile=profile,
+        )
+
+    def chat_messages(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+        profile: PromptRefinerProfile,
+        max_tokens: int | None = None,
+    ) -> str:
+        output_tokens = profile.max_tokens if max_tokens is None else max_tokens
+        if not 0 < output_tokens < profile.context_size:
+            raise ValueError("Output token limit must be below the context size")
         response = self._client.post(
             f"{self.base_url}/v1/chat/completions",
             json={
                 "model": profile.name,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    *messages,
                 ],
-                "max_tokens": profile.max_tokens,
+                "max_tokens": output_tokens,
                 "temperature": profile.temperature,
                 "top_p": profile.top_p,
                 "top_k": profile.top_k,
@@ -65,5 +82,5 @@ class KoboldClient:
         except (KeyError, IndexError, TypeError) as error:
             raise RuntimeError("KoboldCpp returned an invalid chat response") from error
         if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("KoboldCpp returned empty refinement content")
+            raise RuntimeError("KoboldCpp returned empty chat content")
         return content.strip()

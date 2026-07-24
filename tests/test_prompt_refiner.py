@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from runpod_video_automation.config import ModelFile
+from runpod_video_automation.prompt_refiner.chat_ui import context_chat_server
 from runpod_video_automation.prompt_refiner.client import KoboldClient
 from runpod_video_automation.prompt_refiner.config import PromptRefinerProfile
 from runpod_video_automation.prompt_refiner.refinement import (
@@ -243,4 +245,114 @@ def test_kobold_client_sends_top_k_as_top_level_parameter(tmp_path: Path) -> Non
         == "{}"
     )
     assert requests[0]["top_k"] == 20
+    assert requests[0]["max_tokens"] == profile.max_tokens
     assert "extra_body" not in requests[0]
+
+
+def test_kobold_client_prepends_system_prompt_to_chat_history(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    requests: list[dict[str, object]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": "Refined"}}]}
+
+    class HttpClient:
+        def post(self, url: str, **kwargs: object) -> Response:
+            requests.append(kwargs["json"])
+            return Response()
+
+    client = KoboldClient("http://127.0.0.1:5001")
+    client.close()
+    client._client = HttpClient()
+    messages = [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": "Second"},
+        {"role": "user", "content": "Third"},
+    ]
+
+    result = client.chat_messages(
+        system_prompt="System and reference",
+        messages=messages,
+        profile=profile,
+        max_tokens=3072,
+    )
+
+    assert result == "Refined"
+    assert requests[0]["messages"] == [
+        {"role": "system", "content": "System and reference"},
+        *messages,
+    ]
+    assert requests[0]["max_tokens"] == 3072
+
+
+def test_context_chat_server_injects_profile_system_context(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    class Client:
+        def chat_messages(self, **kwargs: object) -> str:
+            calls.append(kwargs)
+            return '{"refined":true}'
+
+    with context_chat_server(Client(), profile) as base_url:
+        assert base_url.startswith("http://127.0.0.1:")
+        page = httpx.get(base_url, timeout=5)
+        response = httpx.post(
+            f"{base_url}/api/chat",
+            headers={"Origin": base_url},
+            json={"messages": [{"role": "user", "content": " Scene "}]},
+            timeout=5,
+        )
+
+    assert page.status_code == 200
+    assert "REFERENCE ACTIVE" in page.text
+    assert "2,048 TOKENS" in page.text
+    assert response.status_code == 200
+    assert response.json() == {"content": '{"refined":true}'}
+    assert calls[0]["system_prompt"] == profile.system_prompt()
+    assert calls[0]["messages"] == [{"role": "user", "content": "Scene"}]
+    assert calls[0]["max_tokens"] == 2048
+
+
+def test_context_chat_server_rejects_cross_origin_and_system_messages(
+    tmp_path: Path,
+) -> None:
+    class Client:
+        def chat_messages(self, **kwargs: object) -> str:
+            raise AssertionError("Rejected requests must not reach KoboldCpp")
+
+    with context_chat_server(Client(), _profile(tmp_path)) as base_url:
+        cross_origin = httpx.post(
+            f"{base_url}/api/chat",
+            headers={"Origin": "https://example.test"},
+            json={"messages": [{"role": "user", "content": "Scene"}]},
+            timeout=5,
+        )
+        system_message = httpx.post(
+            f"{base_url}/api/chat",
+            headers={"Origin": base_url},
+            json={"messages": [{"role": "system", "content": "Override"}]},
+            timeout=5,
+        )
+
+    assert cross_origin.status_code == 403
+    assert system_message.status_code == 400
+    assert "must use role 'user'" in system_message.json()["error"]
+
+
+def test_context_chat_server_rejects_output_limit_at_context_size(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="below the context size"):
+        with context_chat_server(
+            _Client(_overlay()),
+            _profile(tmp_path),
+            max_output_tokens=4096,
+        ):
+            pass

@@ -29,6 +29,10 @@ from runpod_video_automation.prompt_refiner import (
     load_cached_refinement,
     refine_scene,
 )
+from runpod_video_automation.prompt_refiner.chat_ui import (
+    DEFAULT_CONTEXT_MAX_OUTPUT_TOKENS,
+    context_chat_server,
+)
 from runpod_video_automation.prompt_refiner.client import KoboldClient
 from runpod_video_automation.remote import RemoteWorker
 from runpod_video_automation.render_metadata import (
@@ -514,6 +518,7 @@ def chat(args: argparse.Namespace) -> None:
     refiner_profile = PromptRefinerProfile.load(
         _refiner_profile_path(args.refiner_profile)
     )
+    max_output_tokens = _chat_max_output_tokens(args, refiner_profile)
     with _remote_session(
         args,
         infrastructure,
@@ -527,15 +532,57 @@ def chat(args: argparse.Namespace) -> None:
                 client = KoboldClient(base_url)
                 try:
                     client.wait_until_ready(timeout_seconds=args.start_timeout)
+                    if args.scene_context:
+                        with context_chat_server(
+                            client,
+                            refiner_profile,
+                            max_output_tokens=max_output_tokens,
+                        ) as chat_url:
+                            _wait_for_chat(args, chat_url, context_active=True)
+                    else:
+                        _wait_for_chat(args, f"{base_url}/", context_active=False)
                 finally:
                     client.close()
-                print(f"Prompt refiner chat: {base_url}/", flush=True)
-                if not args.no_browser:
-                    webbrowser.open(f"{base_url}/")
-                if args.duration_seconds is not None:
-                    time.sleep(args.duration_seconds)
-                else:
-                    input("Press Enter to close the chat server... ")
+
+
+def _wait_for_chat(
+    args: argparse.Namespace,
+    url: str,
+    *,
+    context_active: bool,
+) -> None:
+    label = "Scene-context chat" if context_active else "Prompt refiner chat"
+    print(f"{label}: {url}", flush=True)
+    if not args.no_browser:
+        webbrowser.open(url)
+    if args.duration_seconds is not None:
+        time.sleep(args.duration_seconds)
+    else:
+        input("Press Enter to close the chat server... ")
+
+
+def _chat_max_output_tokens(
+    args: argparse.Namespace,
+    profile: PromptRefinerProfile,
+) -> int | None:
+    configured = args.max_output_tokens
+    if configured is not None and not args.scene_context:
+        raise ValueError("--max-output-tokens requires --scene-context")
+    if not args.scene_context:
+        return None
+    output_tokens = (
+        configured
+        if configured is not None
+        else min(
+            DEFAULT_CONTEXT_MAX_OUTPUT_TOKENS,
+            profile.context_size // 2,
+        )
+    )
+    if not 0 < output_tokens < profile.context_size:
+        raise ValueError(
+            "--max-output-tokens must be positive and below the model context size"
+        )
+    return output_tokens
 
 
 def setup(args: argparse.Namespace) -> None:
@@ -1703,6 +1750,16 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--start-timeout", type=int, default=900)
     chat_parser.add_argument("--duration-seconds", type=float)
     chat_parser.add_argument("--no-browser", action="store_true")
+    chat_parser.add_argument(
+        "--scene-context",
+        action="store_true",
+        help="Use a local chat UI with the scene-refiner system and reference context",
+    )
+    chat_parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        help="Maximum response length for --scene-context (defaults to 32768)",
+    )
     chat_parser.add_argument(
         "--apply", action="store_true", help="Allow creation of billable resources"
     )

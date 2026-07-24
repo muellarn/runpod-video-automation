@@ -92,6 +92,38 @@ Open KoboldCpp's browser UI through an SSH tunnel:
 uv run runpod-video chat --apply
 ```
 
+To chat with the exact combined system prompt used by automated scene
+refinement, select the context-bound interface:
+
+```bash
+uv run runpod-video chat --apply --scene-context
+```
+
+This option starts a second HTTP interface on a random local loopback port. Its
+backend, rather than browser-controlled JavaScript, prepends
+`scene-refiner-system.txt` and the complete `scene-manifest-reference.md` to
+every KoboldCpp request. The browser may send only alternating `user` and
+`assistant` messages and cannot replace the system role. The interface is
+intended for interactively refining scene prompt payloads and retains chat
+history until **New session** is selected or the page is closed.
+
+The context-bound interface requests up to 32,768 output tokens by default,
+compared with the automated refiner's unchanged 8,192-token budget. This is
+large enough for substantial JSON documents without using model-specific
+continuation commands that can corrupt the JSON structure. Set a different
+limit when required:
+
+```bash
+uv run runpod-video chat \
+  --apply \
+  --scene-context \
+  --max-output-tokens 40000
+```
+
+The value must be positive and lower than the profile's context size. Input,
+the immutable system/reference context, chat history, and generated output
+still share that total context window.
+
 The remote server and local tunnel both bind to `127.0.0.1`; no public HTTP port
 is opened. Press Enter to close the server. For unattended use, combine
 `--no-browser` with `--duration-seconds N`. Reusing an existing Pod requires

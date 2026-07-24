@@ -61,7 +61,16 @@ def test_cli_parser_includes_prompt_refiner_commands() -> None:
         ["refine", "scene.json", "--apply", "--force"]
     )
     chat_args = build_parser().parse_args(
-        ["chat", "--apply", "--no-browser", "--duration-seconds", "5"]
+        [
+            "chat",
+            "--apply",
+            "--no-browser",
+            "--scene-context",
+            "--max-output-tokens",
+            "40000",
+            "--duration-seconds",
+            "5",
+        ]
     )
     setup_args = build_parser().parse_args(["setup", "--apply", "--include-refiner"])
     scene_args = build_parser().parse_args(
@@ -72,8 +81,29 @@ def test_cli_parser_includes_prompt_refiner_commands() -> None:
     assert refine_args.force is True
     assert chat_args.func is cli.chat
     assert chat_args.duration_seconds == 5
+    assert chat_args.scene_context is True
+    assert chat_args.max_output_tokens == 40000
     assert setup_args.include_refiner is True
     assert scene_args.refine_prompts is True
+
+
+def test_chat_output_token_limit_defaults_and_validation() -> None:
+    profile = Namespace(context_size=65536)
+
+    assert cli._chat_max_output_tokens(
+        Namespace(scene_context=True, max_output_tokens=None), profile
+    ) == 32768
+    assert cli._chat_max_output_tokens(
+        Namespace(scene_context=True, max_output_tokens=40000), profile
+    ) == 40000
+    with pytest.raises(ValueError, match="requires --scene-context"):
+        cli._chat_max_output_tokens(
+            Namespace(scene_context=False, max_output_tokens=1000), profile
+        )
+    with pytest.raises(ValueError, match="below the model context size"):
+        cli._chat_max_output_tokens(
+            Namespace(scene_context=True, max_output_tokens=65536), profile
+        )
 
 
 def test_scene_refinement_cache_hit_does_not_start_pod(

@@ -306,7 +306,15 @@ Refine without rendering, or open the loopback-only browser chat:
 ```bash
 uv run runpod-video refine projects/cozy-bedroom --apply
 uv run runpod-video chat --apply
+uv run runpod-video chat --apply --scene-context
 ```
+
+The normal chat command opens KoboldCpp's general interface. `--scene-context`
+instead opens a local interface that prepends the same immutable refiner system
+prompt and complete scene-manifest reference used by automated refinement to
+every request. Its default response budget is 32,768 tokens so large JSON
+objects can complete in one response; override it with
+`--max-output-tokens N` when needed.
 
 Results are cached from the source manifest, pinned model and runtime, prompts,
 reference document, and generation settings. A valid cache can be inspected or
