@@ -93,6 +93,7 @@ def build_shot_inputs(
     end_workflow_sha256: str | None = None,
     start_generation_fingerprint: str | None = None,
     end_generation_fingerprint: str | None = None,
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     positive_parts = [scene.global_prompt]
     if starting_state:
@@ -153,6 +154,8 @@ def build_shot_inputs(
         runtime["end_image_workflow"] = _workflow(
             end_workflow, end_workflow_sha256
         )
+    if prompt_refinement is not None:
+        runtime["prompt_refinement"] = prompt_refinement
 
     return {
         "shot": {"index": index, "name": shot.name},
@@ -193,6 +196,7 @@ def build_generated_image_inputs(
     image_workflow: WorkflowSelection,
     image_workflow_sha256: str,
     reference_images: tuple[Path, ...],
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if role not in {"start", "end"}:
         raise ValueError("Generated image role must be 'start' or 'end'")
@@ -224,6 +228,11 @@ def build_generated_image_inputs(
                 {"source": alias.source, "target": alias.target}
                 for alias in profile.model_path_aliases
             ],
+            **(
+                {"prompt_refinement": prompt_refinement}
+                if prompt_refinement is not None
+                else {}
+            ),
         },
     }
 
@@ -236,6 +245,7 @@ def build_start_image_inputs(
     generation: ResolvedStartImageGeneration,
     start_workflow: WorkflowSelection,
     start_workflow_sha256: str,
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if shot.generate_start_image is None:
         raise ValueError(f"Shot {index} does not configure start image generation")
@@ -252,6 +262,11 @@ def build_start_image_inputs(
                 {"source": alias.source, "target": alias.target}
                 for alias in profile.model_path_aliases
             ],
+            **(
+                {"prompt_refinement": prompt_refinement}
+                if prompt_refinement is not None
+                else {}
+            ),
         },
     }
 
@@ -501,6 +516,7 @@ def write_render_manifest(
     selected_shots: list[int],
     final_video: Path | None = None,
     provenance: str | None = None,
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> None:
     shots = []
     for index, shot in enumerate(scene.shots, start=1):
@@ -543,6 +559,11 @@ def write_render_manifest(
         "schema_version": SCHEMA_VERSION,
         "updated_at": datetime.now(UTC).isoformat(),
         "provenance": provenance,
+        **(
+            {"prompt_refinement": prompt_refinement}
+            if prompt_refinement is not None
+            else {}
+        ),
         "scene": {
             "title": scene.title,
             "source": str(scene_path.resolve()),

@@ -1,0 +1,25 @@
+{
+  "name": "qwen36-fable-fusion-q4-k-m",
+  "runtime": {
+    "path": "tools/koboldcpp/v1.117.1/koboldcpp-linux-x64",
+    "url": "https://github.com/LostRuins/koboldcpp/releases/download/v1.117.1/koboldcpp-linux-x64",
+    "size": 643311952,
+    "sha256": "787ce4105afa3df62486f3c3eb4994232704704e29ef2e74137ea248c318551e"
+  },
+  "model": {
+    "path": "models/llm/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q4_K_M.gguf",
+    "url": "https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF/resolve/b73a29e861a1922ca7b508790c254c91158ec4bb/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q4_K_M.gguf",
+    "size": 18047255072,
+    "sha256": "8440f2a076f149f65bf16975f3a08359936ba2658fc1827b51a30b717de49acb"
+  },
+  "system_prompt": "../prompts/scene-refiner-system.txt",
+  "reference_document": "../docs/scene-manifest-reference.md",
+  "port": 5001,
+  "context_size": 65536,
+  "max_tokens": 8192,
+  "gpu_layers": 65,
+  "seed": 3407,
+  "temperature": 0.2,
+  "top_p": 0.8,
+  "top_k": 20
+}

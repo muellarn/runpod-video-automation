@@ -309,6 +309,10 @@ class Scene:
     def load(cls, path: Path) -> Scene:
         path = path.expanduser().resolve()
         data = json.loads(path.read_text())
+        return cls.from_dict(data, base_dir=path.parent)
+
+    @classmethod
+    def from_dict(cls, data: object, *, base_dir: Path) -> Scene:
         if not isinstance(data, dict):
             raise ValueError("The scene manifest must be a JSON object")
 
@@ -363,7 +367,7 @@ class Scene:
             start_image = _image_path(
                 raw_shot.get("start_image"),
                 f"shots[{index}].start_image",
-                path.parent,
+                base_dir,
             )
             raw_generation = raw_shot.get("generate_start_image")
             generation = (
@@ -375,7 +379,7 @@ class Scene:
                     shot_name=name,
                     scene_width=width,
                     scene_height=height,
-                    base_dir=path.parent,
+                    base_dir=base_dir,
                     prior_shots=shots,
                 )
                 if raw_generation is not None
@@ -389,7 +393,7 @@ class Scene:
             end_image = _image_path(
                 raw_shot.get("end_image"),
                 f"shots[{index}].end_image",
-                path.parent,
+                base_dir,
             )
             raw_end_generation = raw_shot.get("generate_end_image")
             end_generation = (
@@ -401,7 +405,7 @@ class Scene:
                     shot_name=name,
                     scene_width=width,
                     scene_height=height,
-                    base_dir=path.parent,
+                    base_dir=base_dir,
                     prior_shots=shots,
                 )
                 if raw_end_generation is not None

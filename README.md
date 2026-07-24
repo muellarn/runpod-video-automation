@@ -88,6 +88,11 @@ is line-buffered, so status updates also appear immediately in redirected or
 `nohup` logs. Download, start-image, node, sampler, output, and completion
 progress is therefore shown directly by the main command.
 
+Remote package setup is summarized as one checking/ready pair for the downloader
+and configured system-package group. Full `apt` and `dpkg` output is kept in
+`/tmp/runpod-video-apt.log`; only its recent lines are printed when installation
+fails. Model-file, workflow-node, and sampler progress remains visible.
+
 Uploads, ComfyUI execution, and output downloads are retried twice by default.
 Set a different number of retries with `--retries N`. Before retrying a failed
 ComfyUI job, the command interrupts the current execution and clears pending
@@ -99,6 +104,10 @@ For timelines longer or more controlled than one prompt, use a scene manifest.
 It combines a global character/style description with separate action and
 camera direction for every shot. All shots render on the same Pod, so models
 are downloaded and initialized once.
+
+See [`docs/scene-manifest-reference.md`](docs/scene-manifest-reference.md) for
+the complete field-by-field manifest, prompting, continuity, sampling, image,
+resume, and metadata reference.
 
 Scenes are organized as self-contained project bundles:
 
@@ -315,6 +324,47 @@ does not create a Pod when every selected image and video is current. Selecting
 only part of a scene automatically includes stale generated-image dependencies
 needed by dynamic references.
 
+## Prompt Refinement
+
+Prompt refinement is opt-in and runs a pinned open-weight Qwen GGUF locally on
+the RunPod worker through KoboldCpp. It rewrites only prompt-bearing scene and
+shot fields; names, order, paths, seeds, sampling, and other manifest values
+remain source-controlled.
+
+Refine and render sequentially on the same Pod:
+
+```bash
+uv run runpod-video scene projects/cozy-bedroom \
+  --apply \
+  --refine-prompts
+```
+
+Refine without rendering, or open the loopback-only browser chat:
+
+```bash
+uv run runpod-video refine projects/cozy-bedroom --apply
+uv run runpod-video chat --apply
+uv run runpod-video chat --apply --scene-context
+```
+
+The normal chat command opens KoboldCpp's general interface. `--scene-context`
+instead opens a local interface that prepends the same immutable refiner system
+prompt and complete scene-manifest reference used by automated refinement to
+every request. Its default response budget is 32,768 tokens so large JSON
+objects can complete in one response; override it with
+`--max-output-tokens N` when needed.
+
+Results are cached from the source manifest, pinned model and runtime, prompts,
+reference document, and generation settings. A valid cache can be inspected or
+rendered without rerunning the language model; `--force --apply` refreshes it.
+On a cache miss the integrated command stops ComfyUI, runs the refiner, fully
+stops it to release VRAM, then starts ComfyUI on the same worker. Existing Pods
+require explicit `--pod-id POD_ID --restart` whenever the refiner must run.
+
+Preload its artifacts with `setup --include-refiner`. See
+[`docs/prompt-refiner.md`](docs/prompt-refiner.md) for cache, lifecycle, browser,
+security, model, and provenance details.
+
 ## Render Metadata
 
 Every successfully rendered shot writes `metadata.json` beside its WebM and
@@ -325,6 +375,7 @@ Every successfully rendered shot writes `metadata.json` beside its WebM and
 - start/end image hashes and generated-image configuration and reference hashes
 - worker image, adapters, model groups, workflow hashes, model URLs, sizes, and hashes
 - output paths, sizes, and SHA-256 hashes
+- prompt-refinement cache and artifact provenance when enabled
 - Pod ID, GPU, hourly price, completion time, and measured shot duration
 - a canonical fingerprint of all quality-relevant inputs
 

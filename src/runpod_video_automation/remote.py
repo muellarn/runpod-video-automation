@@ -4,12 +4,33 @@ import shlex
 import socket
 import subprocess
 import time
-from hashlib import sha256
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from runpod_video_automation.config import ModelFile, ModelPathAlias
+
+if TYPE_CHECKING:
+    from runpod_video_automation.prompt_refiner.config import PromptRefinerProfile
+
+
+def _quiet_package_setup(
+    packages: tuple[str, ...],
+    *,
+    check_command: str | None = None,
+) -> str:
+    package_args = " ".join(shlex.quote(package) for package in packages)
+    check = check_command or f"dpkg-query -W {package_args} >/dev/null 2>&1"
+    return (
+        f"if ! {check}; then "
+        "apt_log=/tmp/runpod-video-apt.log; "
+        "if ! (apt-get update -qq && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+        f"-o=Dpkg::Use-Pty=0 {package_args}) >\"$apt_log\" 2>&1; then "
+        "echo 'Package installation failed; recent apt output:' >&2; "
+        "tail -n 80 \"$apt_log\" >&2; exit 1; fi; fi"
+    )
 
 
 class RemoteWorker:
@@ -137,12 +158,14 @@ class RemoteWorker:
                 f"mv {shlex.quote(partial)} {shlex.quote(destination)}"
                 f"))"
             )
-        command_parts = [
-            "command -v aria2c >/dev/null || "
-            "(apt-get update -qq && DEBIAN_FRONTEND=noninteractive "
-            "apt-get install -y -qq aria2)",
-            'pids=""',
-        ]
+        package_setup = _quiet_package_setup(
+            ("aria2",),
+            check_command="command -v aria2c >/dev/null 2>&1",
+        )
+        print("Downloader package: aria2 (checking)", flush=True)
+        self.run(package_setup, timeout=20 * 60)
+        print("Downloader package: aria2 (ready)", flush=True)
+        command_parts = ['pids=""']
         for download in downloads:
             command_parts.append(f"{download} & pids=\"$pids $!\"")
         command_parts.extend(
@@ -169,13 +192,13 @@ class RemoteWorker:
     def ensure_system_packages(self, packages: tuple[str, ...]) -> None:
         if not packages:
             return
-        package_args = " ".join(shlex.quote(package) for package in packages)
+        label = ", ".join(packages)
+        print(f"System packages: {label} (checking)", flush=True)
         self.run(
-            f"if ! dpkg-query -W {package_args} >/dev/null 2>&1; then "
-            "apt-get update && "
-            f"DEBIAN_FRONTEND=noninteractive apt-get install -y {package_args}; fi",
+            _quiet_package_setup(packages),
             timeout=20 * 60,
         )
+        print(f"System packages: {label} (ready)", flush=True)
 
     def ensure_comfy_args(
         self,
@@ -183,21 +206,13 @@ class RemoteWorker:
         *,
         system_packages: tuple[str, ...] = (),
     ) -> None:
-        if not args:
-            return
         digest = sha256("\0".join(args).encode()).hexdigest()
         quoted_args = " ".join(shlex.quote(arg) for arg in args)
         package_setup = ""
         if system_packages:
-            package_args = " ".join(
-                shlex.quote(package) for package in system_packages
-            )
-            package_setup = (
-                f"if ! dpkg-query -W {package_args} >/dev/null 2>&1; then "
-                "apt-get update && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y "
-                f"{package_args}; fi; "
-            )
+            label = ", ".join(system_packages)
+            print(f"System packages: {label} (checking)", flush=True)
+            package_setup = _quiet_package_setup(system_packages) + "; "
         self.run(
             package_setup
             + "pid_file=/tmp/comfyui.pid; marker=/tmp/runpod-video-comfy-args; "
@@ -215,9 +230,73 @@ class RemoteWorker:
             f'echo "$pid {digest}" > "$marker"; fi',
             timeout=20 * 60 if system_packages else 5 * 60,
         )
+        if system_packages:
+            print(f"System packages: {label} (ready)", flush=True)
+
+    def stop_comfyui(self) -> None:
+        self.run(
+            "pids=$(pgrep -f '/[c]omfyui/main.py' || true); "
+            'if test -n "$pids"; then kill $pids 2>/dev/null || true; '
+            "deadline=$((SECONDS + 60)); "
+            'while test -n "$(pgrep -f \'/[c]omfyui/main.py\' || true)" '
+            '&& test "$SECONDS" -lt "$deadline"; do sleep 1; done; '
+            "pids=$(pgrep -f '/[c]omfyui/main.py' || true); "
+            'if test -n "$pids"; then kill -KILL $pids 2>/dev/null || true; fi; fi; '
+            "rm -f /tmp/comfyui.pid /tmp/runpod-video-comfy-args",
+            timeout=90,
+        )
+
+    def stop_koboldcpp(self) -> None:
+        self.run(
+            "pid_file=/tmp/runpod-video-koboldcpp.pid; "
+            "runtime_file=/tmp/runpod-video-koboldcpp-runtime; "
+            'pid=$(cat "$pid_file" 2>/dev/null || true); '
+            'runtime=$(cat "$runtime_file" 2>/dev/null || true); '
+            'if test -n "$pid" && test -n "$runtime" '
+            '&& test -r "/proc/$pid/cmdline" '
+            "&& tr '\\0' ' ' < \"/proc/$pid/cmdline\" | "
+            'grep -Fq -- "$runtime"; then '
+            'kill -- -"$pid" 2>/dev/null || true; deadline=$((SECONDS + 60)); '
+            'while kill -0 -- -"$pid" 2>/dev/null '
+            '&& test "$SECONDS" -lt "$deadline"; do sleep 1; done; '
+            'if kill -0 -- -"$pid" 2>/dev/null; then '
+            'kill -KILL -- -"$pid" 2>/dev/null || true; sleep 1; fi; '
+            'if kill -0 -- -"$pid" 2>/dev/null; then exit 1; fi; fi; '
+            'rm -f "$pid_file" "$runtime_file"',
+            timeout=90,
+        )
 
     @contextmanager
-    def comfy_tunnel(self) -> Iterator[str]:
+    def koboldcpp_process(
+        self,
+        profile: PromptRefinerProfile,
+    ) -> Iterator[None]:
+        self.stop_koboldcpp()
+        runtime = shlex.quote(profile.remote_runtime_path)
+        model = shlex.quote(profile.remote_model_path)
+        command = (
+            f"chmod 0755 {runtime}; "
+            "setsid nohup "
+            f"{runtime} --model {model} --usecuda 0 "
+            f"--gpulayers {profile.gpu_layers} "
+            f"--contextsize {profile.context_size} "
+            f"--host 127.0.0.1 --port {profile.port} "
+            "--jinja --jinja_kwargs '{\"enable_thinking\":false}' "
+            "--quiet --skiplauncher "
+            ">/tmp/runpod-video-koboldcpp.log 2>&1 </dev/null & "
+            "echo $! >/tmp/runpod-video-koboldcpp.pid; "
+            f"printf '%s\\n' {runtime} >/tmp/runpod-video-koboldcpp-runtime"
+        )
+        self.run(command, timeout=30)
+        try:
+            yield
+        finally:
+            self.stop_koboldcpp()
+
+    @contextmanager
+    def tunnel(self, remote_port: int) -> Iterator[str]:
+        if not 1 <= remote_port <= 65535:
+            raise ValueError("Remote tunnel port is out of range")
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             local_port = sock.getsockname()[1]
@@ -226,7 +305,7 @@ class RemoteWorker:
                 *self._ssh_base[:-1],
                 "-N",
                 "-L",
-                f"{local_port}:127.0.0.1:8188",
+                f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
                 self._ssh_base[-1],
             ],
             stdout=subprocess.DEVNULL,
@@ -246,3 +325,8 @@ class RemoteWorker:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+
+    @contextmanager
+    def comfy_tunnel(self) -> Iterator[str]:
+        with self.tunnel(8188) as base_url:
+            yield base_url

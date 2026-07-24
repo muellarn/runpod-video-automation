@@ -172,6 +172,30 @@ def test_generated_image_inputs_capture_role_and_exact_provenance(
             "target": "models/diffusion_models",
         }
     ]
+    assert "prompt_refinement" not in inputs["runtime"]
+
+
+def test_generated_image_inputs_capture_prompt_refinement(
+    tmp_path: Path,
+) -> None:
+    _, shot, profile = _values()
+    reference = tmp_path / "reference.png"
+    reference.write_bytes(b"reference")
+    provenance = {"cache_key": "refined-scene"}
+
+    inputs = build_generated_image_inputs(
+        shot,
+        index=1,
+        role="end",
+        profile=profile,
+        generation=_resolved_generation(),
+        image_workflow=profile.select_workflow("image"),
+        image_workflow_sha256="b" * 64,
+        reference_images=(reference,),
+        prompt_refinement=provenance,
+    )
+
+    assert inputs["runtime"]["prompt_refinement"] == provenance
 
 
 def test_reference_order_and_hash_affect_generated_image_fingerprint(
