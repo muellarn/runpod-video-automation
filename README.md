@@ -89,6 +89,11 @@ is line-buffered, so status updates also appear immediately in redirected or
 `nohup` logs. Download, start-image, node, sampler, output, and completion
 progress is therefore shown directly by the main command.
 
+Remote package setup is summarized as one checking/ready pair for the downloader
+and configured system-package group. Full `apt` and `dpkg` output is kept in
+`/tmp/runpod-video-apt.log`; only its recent lines are printed when installation
+fails. Model-file, workflow-node, and sampler progress remains visible.
+
 Uploads, ComfyUI execution, and output downloads are retried twice by default.
 Set a different number of retries with `--retries N`. Before retrying a failed
 ComfyUI job, the command interrupts the current execution and clears pending

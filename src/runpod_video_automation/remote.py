@@ -15,6 +15,24 @@ if TYPE_CHECKING:
     from runpod_video_automation.prompt_refiner.config import PromptRefinerProfile
 
 
+def _quiet_package_setup(
+    packages: tuple[str, ...],
+    *,
+    check_command: str | None = None,
+) -> str:
+    package_args = " ".join(shlex.quote(package) for package in packages)
+    check = check_command or f"dpkg-query -W {package_args} >/dev/null 2>&1"
+    return (
+        f"if ! {check}; then "
+        "apt_log=/tmp/runpod-video-apt.log; "
+        "if ! (apt-get update -qq && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+        f"-o=Dpkg::Use-Pty=0 {package_args}) >\"$apt_log\" 2>&1; then "
+        "echo 'Package installation failed; recent apt output:' >&2; "
+        "tail -n 80 \"$apt_log\" >&2; exit 1; fi; fi"
+    )
+
+
 class RemoteWorker:
     def __init__(self, *, host: str, port: int, ssh_key: Path) -> None:
         self.host = host
@@ -140,12 +158,14 @@ class RemoteWorker:
                 f"mv {shlex.quote(partial)} {shlex.quote(destination)}"
                 f"))"
             )
-        command_parts = [
-            "command -v aria2c >/dev/null || "
-            "(apt-get update -qq && DEBIAN_FRONTEND=noninteractive "
-            "apt-get install -y -qq aria2)",
-            'pids=""',
-        ]
+        package_setup = _quiet_package_setup(
+            ("aria2",),
+            check_command="command -v aria2c >/dev/null 2>&1",
+        )
+        print("Downloader package: aria2 (checking)", flush=True)
+        self.run(package_setup, timeout=20 * 60)
+        print("Downloader package: aria2 (ready)", flush=True)
+        command_parts = ['pids=""']
         for download in downloads:
             command_parts.append(f"{download} & pids=\"$pids $!\"")
         command_parts.extend(
@@ -172,13 +192,13 @@ class RemoteWorker:
     def ensure_system_packages(self, packages: tuple[str, ...]) -> None:
         if not packages:
             return
-        package_args = " ".join(shlex.quote(package) for package in packages)
+        label = ", ".join(packages)
+        print(f"System packages: {label} (checking)", flush=True)
         self.run(
-            f"if ! dpkg-query -W {package_args} >/dev/null 2>&1; then "
-            "apt-get update && "
-            f"DEBIAN_FRONTEND=noninteractive apt-get install -y {package_args}; fi",
+            _quiet_package_setup(packages),
             timeout=20 * 60,
         )
+        print(f"System packages: {label} (ready)", flush=True)
 
     def ensure_comfy_args(
         self,
@@ -190,15 +210,9 @@ class RemoteWorker:
         quoted_args = " ".join(shlex.quote(arg) for arg in args)
         package_setup = ""
         if system_packages:
-            package_args = " ".join(
-                shlex.quote(package) for package in system_packages
-            )
-            package_setup = (
-                f"if ! dpkg-query -W {package_args} >/dev/null 2>&1; then "
-                "apt-get update && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y "
-                f"{package_args}; fi; "
-            )
+            label = ", ".join(system_packages)
+            print(f"System packages: {label} (checking)", flush=True)
+            package_setup = _quiet_package_setup(system_packages) + "; "
         self.run(
             package_setup
             + "pid_file=/tmp/comfyui.pid; marker=/tmp/runpod-video-comfy-args; "
@@ -216,6 +230,8 @@ class RemoteWorker:
             f'echo "$pid {digest}" > "$marker"; fi',
             timeout=20 * 60 if system_packages else 5 * 60,
         )
+        if system_packages:
+            print(f"System packages: {label} (ready)", flush=True)
 
     def stop_comfyui(self) -> None:
         self.run(

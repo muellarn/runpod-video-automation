@@ -28,6 +28,7 @@ def test_wait_for_ssh_reports_last_connection_error(
 
 def test_ensure_models_uses_parallel_segmented_resumable_downloads(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[tuple[str, int | None]] = []
     worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
@@ -43,15 +44,25 @@ def test_ensure_models_uses_parallel_segmented_resumable_downloads(
 
     worker.ensure_models(models)
 
-    assert len(calls) == 2
-    download_command, timeout = calls[1]
-    assert "apt-get install -y -qq aria2" in download_command
+    assert len(calls) == 3
+    package_command, package_timeout = calls[1]
+    download_command, timeout = calls[2]
+    assert "apt-get install -y -qq -o=Dpkg::Use-Pty=0 aria2" in package_command
+    assert '>"$apt_log" 2>&1' in package_command
+    assert "tail -n 80" in package_command
+    assert package_timeout == 20 * 60
     assert download_command.count("timeout --signal=INT 600 aria2c") == 2
     assert download_command.count("--max-connection-per-server=4") == 2
     assert download_command.count("--continue=true") == 2
     assert "pids=\"\"" in download_command
     assert "for pid in $pids" in download_command
     assert timeout == 4 * 60 * 60
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        "Downloader package: aria2 (checking)",
+        "Downloader package: aria2 (ready)",
+    ]
+    subprocess.run(["bash", "-n", "-c", package_command], check=True)
+    subprocess.run(["bash", "-n", "-c", download_command], check=True)
 
 
 def test_ensure_models_verifies_sha256(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,7 +86,7 @@ def test_ensure_models_verifies_sha256(monkeypatch: pytest.MonkeyPatch) -> None:
         )
     )
 
-    download_command, _ = calls[1]
+    download_command, _ = calls[-1]
     assert download_command.count("sha256sum") == 2
     assert checksum in download_command
 
@@ -110,7 +121,7 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
         ),
     )
 
-    download_command, _ = calls[1]
+    download_command, _ = calls[-1]
     assert "mkdir -p /runpod-volume/models/unet /runpod-volume/models/clip" in download_command
     assert (
         "ln -sfn /runpod-volume/models/diffusion_models/model.safetensors "
@@ -125,6 +136,7 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
 
 def test_ensure_system_packages_installs_only_when_missing(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[tuple[str, int | None]] = []
     worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
@@ -138,12 +150,19 @@ def test_ensure_system_packages_installs_only_when_missing(
 
     command, timeout = calls[0]
     assert "dpkg-query -W gcc python3-dev" in command
-    assert "apt-get install -y gcc python3-dev" in command
+    assert "apt-get install -y -qq -o=Dpkg::Use-Pty=0 gcc python3-dev" in command
+    assert '>"$apt_log" 2>&1' in command
     assert timeout == 20 * 60
+    assert capsys.readouterr().out.splitlines() == [
+        "System packages: gcc, python3-dev (checking)",
+        "System packages: gcc, python3-dev (ready)",
+    ]
+    subprocess.run(["bash", "-n", "-c", command], check=True)
 
 
 def test_ensure_comfy_args_restarts_only_for_a_new_configuration(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[tuple[str, int | None]] = []
     worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
@@ -164,7 +183,13 @@ def test_ensure_comfy_args_restarts_only_for_a_new_configuration(
     assert "--enable-triton-backend" in command
     assert "kill -0" in command
     assert "nohup /opt/venv/bin/python" in command
+    assert '>"$apt_log" 2>&1' in command
     assert timeout == 20 * 60
+    assert capsys.readouterr().out.splitlines() == [
+        "System packages: gcc, python3-dev (checking)",
+        "System packages: gcc, python3-dev (ready)",
+    ]
+    subprocess.run(["bash", "-n", "-c", command], check=True)
 
 
 def test_ensure_comfy_args_starts_comfy_without_extra_arguments(
