@@ -92,7 +92,10 @@ class RemoteWorker:
         )
         self.run(f"mkdir -p {mkdir_args}")
         downloads: list[str] = []
+        progress_reports: list[str] = []
+        failure_reports: list[str] = []
         model_aliases: dict[str, str] = {}
+        print(f"Models: checking {len(models)} required file(s)", flush=True)
         for index, model in enumerate(models, start=1):
             destination = f"/runpod-volume/{model.path}"
             for alias in aliases:
@@ -106,17 +109,25 @@ class RemoteWorker:
                     raise ValueError(f"Model path alias collision at {alias_path}")
                 model_aliases[alias_path] = destination
             partial = f"{destination}.part"
-            print(f"[{index}/{len(models)}] Ensuring {model.path}")
             destination_size_check = (
+                f"test -f {shlex.quote(destination)} && "
                 f"test $(stat -c%s {shlex.quote(destination)} 2>/dev/null || echo 0) "
                 f"-eq {model.size}"
                 if model.size is not None
-                else f"test -s {shlex.quote(destination)}"
+                else (
+                    f"test -f {shlex.quote(destination)} && "
+                    f"test -s {shlex.quote(destination)}"
+                )
             )
             partial_size_check = (
-                f"test $(stat -c%s {shlex.quote(partial)}) -eq {model.size}"
+                f"test -f {shlex.quote(partial)} && "
+                f"test $(stat -c%s {shlex.quote(partial)} 2>/dev/null || echo 0) "
+                f"-eq {model.size}"
                 if model.size is not None
-                else f"test -s {shlex.quote(partial)}"
+                else (
+                    f"test -f {shlex.quote(partial)} && "
+                    f"test -s {shlex.quote(partial)}"
+                )
             )
             destination_hash_check = (
                 f"test $(sha256sum {shlex.quote(destination)} | cut -d' ' -f1) "
@@ -133,43 +144,111 @@ class RemoteWorker:
             destination_check = (
                 f"({destination_size_check} && {destination_hash_check})"
             )
-            partial_check = f"({partial_size_check} && {partial_hash_check})"
             partial_directory = str(Path(partial).parent)
             partial_name = Path(partial).name
-            completion_check = f'test "$aria_ok" -eq 1 && {partial_check}'
+            label = Path(model.path).name
             downloads.append(
-                f"({destination_check} || ("
-                f"completed=0; "
-                f"for attempt in $(seq 1 24); do "
+                f"(status_file=\"$job_root/{index}.status\"; "
+                f"log_file=\"$job_root/{index}.log\"; "
+                f"terminal=0; rm -f \"$status_file\" \"$log_file\"; "
+                f"trap 'code=$?; if test \"$terminal\" -ne 1; then "
+                f"printf \"failed\\n\" >\"$status_file\"; fi; "
+                f"trap - EXIT; exit \"$code\"' EXIT; "
+                f"if {destination_check}; then "
+                f"printf 'cached\\n' >\"$status_file\" && terminal=1; "
+                f"else printf 'waiting\\n' >\"$status_file\"; "
+                f"exec 9>{shlex.quote(destination + '.download.lock')} || exit 1; "
+                f"if ! flock -w 1800 9; then "
+                f"printf 'Timed out waiting 30 minutes for the model download "
+                f"lock.\\n' >>\"$log_file\"; exit 1; fi; "
+                f"if {destination_check}; then "
+                f"printf 'cached\\n' >\"$status_file\" && terminal=1; "
+                f"else printf 'downloading\\n' >\"$status_file\"; completed=0; "
+                f"for attempt in $(seq 1 12); do "
                 f"aria_ok=0; "
-                f"timeout --signal=INT 600 aria2c --continue=true "
+                f"timeout --signal=INT --kill-after=30 600 "
+                f"aria2c --continue=true "
                 f"--max-connection-per-server=4 --split=4 --min-split-size=16M "
                 f"--file-allocation=none --auto-file-renaming=false "
                 f"--allow-overwrite=true --max-tries=5 --retry-wait=1 "
-                f"--connect-timeout=30 --timeout=30 --summary-interval=10 "
-                f"--console-log-level=warn --dir={shlex.quote(partial_directory)} "
+                f"--connect-timeout=30 --timeout=30 --summary-interval=0 "
+                f"--console-log-level=warn --show-console-readout=false "
+                f"--dir={shlex.quote(partial_directory)} "
                 f"--out={shlex.quote(partial_name)} {shlex.quote(model.url)} "
-                f"&& aria_ok=1 || true; "
-                f"if {completion_check}; then completed=1; break; fi; "
-                f"echo 'Retrying {model.path} with a fresh connection' >&2; "
+                f">>\"$log_file\" 2>&1 && aria_ok=1 || true; "
+                f"if test \"$aria_ok\" -eq 1 && {partial_size_check}; then "
+                f"printf 'verifying\\n' >\"$status_file\"; "
+                f"if {partial_hash_check}; then completed=1; break; fi; "
+                f"printf 'Checksum mismatch; restarting download.\\n' "
+                f">>\"$log_file\"; "
+                f"rm -f {shlex.quote(partial)} "
+                f"{shlex.quote(partial + '.aria2')}; "
+                f"fi; printf 'downloading\\n' >\"$status_file\"; "
                 f"done; "
-                f'test "$completed" -eq 1 && '
+                f"if test \"$completed\" -eq 1; then "
                 f"rm -f {shlex.quote(partial + '.aria2')} && "
-                f"mv {shlex.quote(partial)} {shlex.quote(destination)}"
-                f"))"
+                f"mv -T {shlex.quote(partial)} {shlex.quote(destination)} && "
+                f"{destination_check} && "
+                f"printf 'ready\\n' >\"$status_file\" && terminal=1 || exit 1; "
+                f"else exit 1; fi; fi; fi)"
+            )
+            size_progress = (
+                f"current=$(stat -c%s {shlex.quote(partial)} 2>/dev/null || "
+                f"echo 0); percent=$((current * 100 / {model.size})); "
+                if model.size is not None
+                else "percent='?'; "
+            )
+            progress_reports.append(
+                f"state=$(cat \"$job_root/{index}.status\" 2>/dev/null || "
+                f"echo pending); case \"$state\" in cached|ready|failed) ;; "
+                f"*) pid=$(cat \"$job_root/{index}.pid\" 2>/dev/null || true); "
+                f"if test -n \"$pid\" && ! kill -0 \"$pid\" 2>/dev/null; then "
+                f"state=$(cat \"$job_root/{index}.status\" 2>/dev/null || "
+                f"echo failed); case \"$state\" in cached|ready|failed) ;; "
+                f"*) state=failed; printf 'failed\\n' "
+                f">\"$job_root/{index}.status\" ;; esac; fi ;; esac; "
+                f"case \"$state\" in "
+                f"cached|ready|failed) ;; "
+                f"waiting) running=1; item={shlex.quote(label + ' waiting')}; "
+                f"progress=\"${{progress}}${{progress:+ | }}${{item}}\" ;; "
+                f"verifying) running=1; item={shlex.quote(label + ' verifying')}; "
+                f"progress=\"${{progress}}${{progress:+ | }}${{item}}\" ;; "
+                f"downloading) running=1; {size_progress}"
+                f"item={shlex.quote(label)}' '\"$percent\"'%'; "
+                f"progress=\"${{progress}}${{progress:+ | }}${{item}}\" ;; "
+                f"*) running=1 ;; esac"
+            )
+            failure_reports.append(
+                f"if test \"$(cat \"$job_root/{index}.status\" 2>/dev/null)\" "
+                f"= failed; then echo {shlex.quote('Model download failed: ' + model.path)} "
+                f">&2; tail -n 20 \"$job_root/{index}.log\" >&2; fi"
             )
         package_setup = _quiet_package_setup(
-            ("aria2",),
-            check_command="command -v aria2c >/dev/null 2>&1",
+            ("aria2", "util-linux"),
+            check_command=(
+                "command -v aria2c >/dev/null 2>&1 && "
+                "command -v flock >/dev/null 2>&1"
+            ),
         )
-        print("Downloader package: aria2 (checking)", flush=True)
         self.run(package_setup, timeout=20 * 60)
-        print("Downloader package: aria2 (ready)", flush=True)
-        command_parts = ['pids=""']
-        for download in downloads:
-            command_parts.append(f"{download} & pids=\"$pids $!\"")
+        print("Models: downloader ready", flush=True)
+        command_parts = [
+            'job_root="/tmp/runpod-video-download-$$"',
+            'mkdir -p "$job_root"',
+            'pids=""',
+        ]
+        for index, download in enumerate(downloads, start=1):
+            command_parts.append(
+                f"{download} & pid=$!; printf '%s\\n' \"$pid\" "
+                f">\"$job_root/{index}.pid\"; pids=\"$pids $pid\""
+            )
         command_parts.extend(
             [
+                "while :; do running=0; progress=''; "
+                + "; ".join(progress_reports)
+                + "; if test -n \"$progress\"; then "
+                "echo \"Models: $progress\"; fi; "
+                "if test \"$running\" -eq 0; then break; fi; sleep 10; done",
                 "status=0",
                 'for pid in $pids; do wait "$pid" || status=1; done',
             ]
@@ -186,8 +265,25 @@ class RemoteWorker:
                 f'if test "$status" -eq 0; then mkdir -p {alias_directories} '
                 f"&& {alias_commands} || status=1; fi"
             )
+        command_parts.append(
+            'if test "$status" -ne 0; then '
+            + "; ".join(failure_reports)
+            + "; fi"
+        )
+        command_parts.append('rm -rf "$job_root"')
         command_parts.append('exit "$status"')
-        self.run("; ".join(command_parts), timeout=4 * 60 * 60)
+        try:
+            self.run("; ".join(command_parts), timeout=3 * 60 * 60)
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(
+                "Model download timed out after 3 hours; resumable partial files "
+                "were preserved"
+            ) from None
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(
+                "Model download failed; see the concise diagnostics above"
+            ) from None
+        print(f"Models: {len(models)}/{len(models)} ready", flush=True)
 
     def ensure_system_packages(self, packages: tuple[str, ...]) -> None:
         if not packages:
