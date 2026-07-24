@@ -61,6 +61,7 @@ def build_shot_inputs(
     video_workflow_sha256: str,
     start_workflow_sha256: str | None,
     starting_state: str = "",
+    end_image: Path | None = None,
 ) -> dict[str, Any]:
     positive_parts = [scene.global_prompt]
     if starting_state:
@@ -106,7 +107,7 @@ def build_shot_inputs(
         "conditioning": {
             "start_source": start_source,
             "start_image": _asset(start_image),
-            "end_image": _asset(shot.end_image),
+            "end_image": _asset(end_image if end_image is not None else shot.end_image),
             "generation": (
                 asdict(shot.generate_start_image)
                 if shot.generate_start_image is not None
@@ -344,6 +345,14 @@ def write_render_manifest(
             "title": scene.title,
             "source": str(scene_path.resolve()),
             "sha256": sha256_file(scene_path.resolve()),
+            "snapshot": (
+                {
+                    "path": "scene.snapshot.json",
+                    **(_asset(output_root / "scene.snapshot.json") or {}),
+                }
+                if (output_root / "scene.snapshot.json").is_file()
+                else None
+            ),
         },
         "selected_shots": selected_shots,
         "start_images": start_images,

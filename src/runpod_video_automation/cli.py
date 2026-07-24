@@ -21,6 +21,7 @@ from runpod_video_automation.render_metadata import (
     build_start_image_inputs,
     fingerprint,
     read_metadata,
+    sha256_file,
     validate_shot_metadata,
     validate_start_image_metadata,
     write_render_manifest,
@@ -49,6 +50,19 @@ def _profile_path(value: str | None) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def _scene_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_dir():
+        path = path / "scene.json"
+    if not path.is_file():
+        raise ValueError(f"Scene manifest not found: {path}")
+    return path.resolve()
+
+
+def _scene_output_root(scene_path: Path, output: str | None) -> Path:
+    return Path(output) if output else scene_path.parent / "output"
 
 
 def _api_key() -> str:
@@ -395,6 +409,37 @@ def _continuation_path(output_root: Path, index: int, name: str) -> Path:
     return _shot_dir(output_root, index, name) / "continuation.png"
 
 
+def _snapshot_scene(scene_path: Path, output_root: Path) -> Path:
+    destination = output_root / "scene.snapshot.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".json.tmp")
+    shutil.copy2(scene_path, temporary)
+    temporary.replace(destination)
+    return destination
+
+
+def _snapshot_input(
+    source: Path,
+    output_root: Path,
+    *,
+    index: int,
+    role: str,
+) -> Path:
+    digest = sha256_file(source)
+    suffix = source.suffix.lower() or ".img"
+    destination = (
+        output_root
+        / "000-inputs"
+        / f"{index:03d}-{role}-{digest[:12]}{suffix}"
+    )
+    if not destination.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+    return destination
+
+
 def _start_image_metadata_path(output_root: Path, index: int, name: str) -> Path:
     return (
         output_root
@@ -433,7 +478,7 @@ def _selected_shot_entries(
 
 
 def render_scene(args: argparse.Namespace) -> None:
-    scene_path = Path(args.manifest)
+    scene_path = _scene_path(args.manifest)
     scene = Scene.load(scene_path)
     shot_entries = _selected_shot_entries(scene, args)
     selected_numbers = {index for index, _ in shot_entries}
@@ -450,9 +495,27 @@ def render_scene(args: argparse.Namespace) -> None:
     _validate_execution_args(args)
     if args.start_image_only and getattr(args, "approve_start_images", False):
         raise ValueError("Use either --start-image-only or --approve-start-images")
-    output_root = Path(args.output)
+    output_root = _scene_output_root(scene_path, args.output)
     if not args.start_image_only and shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to assemble scene outputs")
+    scene_snapshot = _snapshot_scene(scene_path, output_root)
+    print(f"Scene snapshot: {scene_snapshot}")
+    input_snapshots: dict[tuple[int, str], Path] = {}
+    for index, shot in shot_entries:
+        if shot.start_image is not None:
+            input_snapshots[(index, "start")] = _snapshot_input(
+                shot.start_image,
+                output_root,
+                index=index,
+                role="start",
+            )
+        if shot.end_image is not None:
+            input_snapshots[(index, "end")] = _snapshot_input(
+                shot.end_image,
+                output_root,
+                index=index,
+                role="end",
+            )
     for index, shot in shot_entries:
         if args.start_image_only:
             continue
@@ -541,7 +604,7 @@ def render_scene(args: argparse.Namespace) -> None:
     if getattr(args, "resume", False) and not args.start_image_only:
         for index, shot in shot_entries:
             if shot.start_image is not None:
-                expected_start_image = shot.start_image
+                expected_start_image = input_snapshots[(index, "start")]
             elif shot.generate_start_image is not None:
                 expected_start_image = approved_images.get(index)
             else:
@@ -561,6 +624,7 @@ def render_scene(args: argparse.Namespace) -> None:
                 starting_state=(
                     scene.shots[index - 2].end_state if index > 1 else ""
                 ),
+                end_image=input_snapshots.get((index, "end")),
             )
             metadata_path = _shot_dir(output_root, index, shot.name) / "metadata.json"
             metadata = read_metadata(metadata_path)
@@ -664,7 +728,7 @@ def render_scene(args: argparse.Namespace) -> None:
                 continue
             shot_started = time.monotonic()
             print(f"Rendering shot {index}/{len(scene.shots)}: {shot.name}")
-            start_image = shot.start_image
+            start_image = input_snapshots.get((index, "start"))
             if index in approved_images:
                 start_image = approved_images[index]
                 print(f"Approved start keyframe: {start_image}")
@@ -753,6 +817,7 @@ def render_scene(args: argparse.Namespace) -> None:
                 starting_state=(
                     scene.shots[index - 2].end_state if index > 1 else ""
                 ),
+                end_image=input_snapshots.get((index, "end")),
             )
             start_remote = f"scene-{index:03d}-start{start_image.suffix.lower() or '.png'}"
             start_remote = _retry_operation(
@@ -764,11 +829,12 @@ def render_scene(args: argparse.Namespace) -> None:
 
             end_remote: str | None = None
             if shot.end_image:
-                end_remote = f"scene-{index:03d}-end{shot.end_image.suffix.lower() or '.png'}"
+                end_image = input_snapshots[(index, "end")]
+                end_remote = f"scene-{index:03d}-end{end_image.suffix.lower() or '.png'}"
                 end_remote = _retry_operation(
                     f"End keyframe upload for shot {index}",
                     getattr(args, "retries", 2),
-                    lambda: comfy.upload_image(shot.end_image, end_remote),
+                    lambda: comfy.upload_image(end_image, end_remote),
                 )
                 print(f"Uploaded end keyframe: {end_remote}")
 
@@ -934,7 +1000,9 @@ def build_parser() -> argparse.ArgumentParser:
     scene_parser = subparsers.add_parser(
         "scene", help="Render and assemble a multi-shot scene manifest"
     )
-    scene_parser.add_argument("manifest", help="Scene manifest in JSON format")
+    scene_parser.add_argument(
+        "manifest", help="Scene JSON file or project directory containing scene.json"
+    )
     scene_parser.add_argument(
         "--workflow", default="workflows/wan22-i2v-14b-api.json"
     )
@@ -976,7 +1044,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Interrupt ComfyUI and clear its queue before rendering; requires --pod-id",
     )
-    scene_parser.add_argument("--output", default="output/scene")
+    scene_parser.add_argument(
+        "--output",
+        help="Output directory; defaults to output/ beside scene.json",
+    )
     scene_parser.add_argument("--start-timeout", type=int, default=900)
     scene_parser.add_argument("--workflow-timeout", type=int, default=7200)
     scene_parser.add_argument(

@@ -24,6 +24,35 @@ def test_cli_parser_includes_scene_command() -> None:
 
     assert args.command == "scene"
     assert args.start_image_workflow == "workflows/z-image-turbo-start-image-api.json"
+    assert args.output is None
+
+
+def test_scene_project_directory_uses_local_output(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    scene_path = project / "scene.json"
+    scene_path.write_text("{}")
+
+    resolved = cli._scene_path(str(project))
+
+    assert resolved == scene_path.resolve()
+    assert cli._scene_output_root(resolved, None) == project.resolve() / "output"
+
+
+def test_input_snapshot_is_content_addressed(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"image")
+
+    snapshot = cli._snapshot_input(
+        source,
+        tmp_path / "output",
+        index=2,
+        role="end",
+    )
+
+    assert snapshot.parent.name == "000-inputs"
+    assert snapshot.name.startswith("002-end-")
+    assert snapshot.read_bytes() == b"image"
 
 
 def test_scene_parser_accepts_existing_pod_restart() -> None:
@@ -428,11 +457,17 @@ def test_resume_assembles_completed_shots_without_starting_pod(
     )
     workflow = {"1": {"class_type": "Test", "inputs": {}}}
     loaded_scene = cli.Scene.load(manifest)
+    start_snapshot = cli._snapshot_input(
+        start_image,
+        output_root,
+        index=1,
+        role="start",
+    )
     metadata_inputs = build_shot_inputs(
         loaded_scene,
         loaded_scene.shots[0],
         index=1,
-        start_image=start_image,
+        start_image=start_snapshot,
         profile=profile,
         video_workflow_sha256=fingerprint(workflow),
         start_workflow_sha256=None,

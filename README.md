@@ -77,6 +77,22 @@ It combines a global character/style description with separate action and
 camera direction for every shot. All shots render on the same Pod, so models
 are downloaded and initialized once.
 
+Scenes are organized as self-contained project bundles:
+
+```text
+projects/cozy-bedroom/
+├── scene.json
+├── assets/
+└── output/
+```
+
+Pass either the project directory or its `scene.json`. Without `--output`, the
+CLI writes to `output/` beside the manifest. Explicit `start_image` and
+`end_image` paths are resolved relative to `scene.json`; before rendering they
+are copied to content-addressed files under `output/000-inputs/`. The validated
+manifest is copied to `output/scene.snapshot.json`. This keeps each render
+self-contained while `--output` remains available as an override.
+
 Validate the included example without creating cloud resources:
 
 ```bash
@@ -137,10 +153,9 @@ individual WebM remains in a numbered output directory.
 Render one shot by its 1-based position in the manifest:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
-  --shot 2 \
-  --output output/bedroom-scene
+  --shot 2
 ```
 
 The original shot number and numbered output directory are preserved. A shot
@@ -154,10 +169,9 @@ does not assemble a complete scene WebM.
 Select multiple shots with comma-separated numbers and inclusive ranges:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
-  --shots 1,3-5 \
-  --output output/bedroom-scene
+  --shots 1,3-5
 ```
 
 Selected shots run in manifest order. When a selected shot depends on its
@@ -169,10 +183,9 @@ outputs.
 Resume an interrupted scene in the same output directory:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
-  --resume \
-  --output output/bedroom-scene
+  --resume
 ```
 
 `--resume` compares the current effective shot inputs with the shot's saved
@@ -193,10 +206,9 @@ Generate only the images configured by `generate_start_image`, without loading
 the Wan models, requiring FFmpeg, or rendering video shots:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
-  --start-image-only \
-  --output output/start-image-review
+  --start-image-only
 ```
 
 To use an already running Pod, add `--pod-id POD_ID --keep-pod`. The command
@@ -207,22 +219,20 @@ For an explicit start-image review, first generate images without video and
 keep the same output directory:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
   --start-image-only \
-  --stop-pod \
-  --output output/bedroom-review
+  --stop-pod
 ```
 
 After inspecting the files in `000-generated-start-image`, approve them and
 render without regenerating them:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
   --approve-start-images \
-  --pod-id POD_ID \
-  --output output/bedroom-review
+  --pod-id POD_ID
 ```
 
 Approval is checked before Pod use. Every selected shot with
@@ -263,10 +273,9 @@ Use `--keep-pod` only for debugging. Use `--stop-pod` to release the GPU but
 retain the Pod configuration instead of terminating it:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
-  --stop-pod \
-  --output output/bedroom-scene
+  --stop-pod
 ```
 
 `--keep-pod` and `--stop-pod` are mutually exclusive. A stopped Pod incurs no
@@ -279,11 +288,10 @@ To keep a Pod available briefly but stop it automatically after ComfyUI is
 idle, combine `--keep-pod` with a local watchdog:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
   --keep-pod \
-  --idle-stop-minutes 5 \
-  --output output/bedroom-scene
+  --idle-stop-minutes 5
 ```
 
 The detached watchdog polls ComfyUI's running and pending queues. Active work
@@ -298,10 +306,9 @@ start image. This prevents the original orchestrator from deleting the Pod when
 it is interrupted:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
-  --keep-pod \
-  --output output/bedroom-review
+  --keep-pod
 ```
 
 Get the Pod ID from the command output or `runpod-video inventory`. After
@@ -309,12 +316,11 @@ adjusting the manifest, reuse that Pod and cancel the old ComfyUI execution and
 pending queue before starting the corrected scene:
 
 ```bash
-uv run runpod-video scene scenes/adult-bedroom-15s.example.json \
+uv run runpod-video scene projects/cozy-bedroom \
   --apply \
   --pod-id POD_ID \
   --restart \
-  --keep-pod \
-  --output output/bedroom-restart
+  --keep-pod
 ```
 
 `--restart` requires `--pod-id`. The existing Pod, mounted model volume, and
