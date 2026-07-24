@@ -75,6 +75,13 @@ seed, and node 50 controls width, height, frame count, and batch size.
 Custom workflows can be exported with `Workflow -> Export (API)`. Select their
 dependencies with one or more `--model-group` options.
 
+The default Wan profile enables the ComfyUI Triton backend on H100 workers. In
+the measured 576x800, 81-frame, 20-step workload this reduced warm wall time
+from about 175 seconds to 161 seconds without an observed quality loss. The
+motion trajectory is not bit-identical to the non-Triton backend. See
+[`docs/comfyui-single-h100-benchmark.md`](docs/comfyui-single-h100-benchmark.md)
+for the complete measurements and rejected optimizations.
+
 During execution, the CLI connects to ComfyUI's WebSocket before queueing the
 workflow and prints node transitions plus sampler steps and percentages. If the
 WebSocket is unavailable, execution continues with history polling. CLI output

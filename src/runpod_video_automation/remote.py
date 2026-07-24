@@ -4,6 +4,7 @@ import shlex
 import socket
 import subprocess
 import time
+from hashlib import sha256
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -164,6 +165,56 @@ class RemoteWorker:
             )
         command_parts.append('exit "$status"')
         self.run("; ".join(command_parts), timeout=4 * 60 * 60)
+
+    def ensure_system_packages(self, packages: tuple[str, ...]) -> None:
+        if not packages:
+            return
+        package_args = " ".join(shlex.quote(package) for package in packages)
+        self.run(
+            f"if ! dpkg-query -W {package_args} >/dev/null 2>&1; then "
+            "apt-get update && "
+            f"DEBIAN_FRONTEND=noninteractive apt-get install -y {package_args}; fi",
+            timeout=20 * 60,
+        )
+
+    def ensure_comfy_args(
+        self,
+        args: tuple[str, ...],
+        *,
+        system_packages: tuple[str, ...] = (),
+    ) -> None:
+        if not args:
+            return
+        digest = sha256("\0".join(args).encode()).hexdigest()
+        quoted_args = " ".join(shlex.quote(arg) for arg in args)
+        package_setup = ""
+        if system_packages:
+            package_args = " ".join(
+                shlex.quote(package) for package in system_packages
+            )
+            package_setup = (
+                f"if ! dpkg-query -W {package_args} >/dev/null 2>&1; then "
+                "apt-get update && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y "
+                f"{package_args}; fi; "
+            )
+        self.run(
+            package_setup
+            + "pid_file=/tmp/comfyui.pid; marker=/tmp/runpod-video-comfy-args; "
+            'pid=$(cat "$pid_file" 2>/dev/null || true); '
+            'configured=$(cat "$marker" 2>/dev/null || true); '
+            f'if test "$configured" != "$pid {digest}" || '
+            'test -z "$pid" || ! kill -0 "$pid" 2>/dev/null; then '
+            'if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then '
+            'kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 1; done; fi; '
+            "nohup /opt/venv/bin/python -u /comfyui/main.py "
+            "--disable-auto-launch --disable-metadata --listen --verbose INFO "
+            f"--log-stdout {quoted_args} "
+            ">/tmp/comfyui-profile.log 2>&1 </dev/null & "
+            'pid=$!; echo "$pid" > "$pid_file"; '
+            f'echo "$pid {digest}" > "$marker"; fi',
+            timeout=20 * 60 if system_packages else 5 * 60,
+        )
 
     @contextmanager
     def comfy_tunnel(self) -> Iterator[str]:

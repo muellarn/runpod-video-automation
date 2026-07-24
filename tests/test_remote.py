@@ -120,3 +120,47 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
         "/runpod-volume/models/clip/encoder.safetensors"
     ) in download_command
     assert "|| status=1; fi" in download_command
+
+
+def test_ensure_system_packages_installs_only_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int | None]] = []
+    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
+    monkeypatch.setattr(
+        worker,
+        "run",
+        lambda command, timeout=None: calls.append((command, timeout)),
+    )
+
+    worker.ensure_system_packages(("gcc", "python3-dev"))
+
+    command, timeout = calls[0]
+    assert "dpkg-query -W gcc python3-dev" in command
+    assert "apt-get install -y gcc python3-dev" in command
+    assert timeout == 20 * 60
+
+
+def test_ensure_comfy_args_restarts_only_for_a_new_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int | None]] = []
+    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
+    monkeypatch.setattr(
+        worker,
+        "run",
+        lambda command, timeout=None: calls.append((command, timeout)),
+    )
+
+    worker.ensure_comfy_args(
+        ("--enable-triton-backend",),
+        system_packages=("gcc", "python3-dev"),
+    )
+
+    command, timeout = calls[0]
+    assert "runpod-video-comfy-args" in command
+    assert "dpkg-query -W gcc python3-dev" in command
+    assert "--enable-triton-backend" in command
+    assert "kill -0" in command
+    assert "nohup /opt/venv/bin/python" in command
+    assert timeout == 20 * 60

@@ -19,6 +19,13 @@
   "min_vcpu_per_gpu": 8,
   "container_disk_gb": 50,
   "max_hourly_cost": 3.5,
+  "system_packages": [
+    "gcc",
+    "python3-dev"
+  ],
+  "comfy_args": [
+    "--enable-triton-backend"
+  ],
   "model_groups": {
     "wan22-i2v": [
       {

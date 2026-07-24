@@ -137,6 +137,7 @@ def build_shot_inputs(
         },
         "runtime": {
             "container_image": profile.image,
+            "comfy_args": list(profile.comfy_args),
             "video_workflow": _workflow(
                 video_workflow,
                 video_workflow_sha256,
@@ -171,6 +172,7 @@ def build_start_image_inputs(
         "generation": generation.metadata(),
         "runtime": {
             "container_image": profile.image,
+            "comfy_args": list(profile.comfy_args),
             "start_image_workflow": _workflow(
                 start_workflow, start_workflow_sha256
             ),

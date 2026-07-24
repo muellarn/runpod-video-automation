@@ -174,3 +174,5 @@ def test_wan_profile_loads() -> None:
     assert start_image.adapter == "z_image_turbo"
     assert profile.gpu_type_ids[0] == "NVIDIA H100 80GB HBM3"
     assert profile.max_hourly_cost == 3.5
+    assert profile.system_packages == ("gcc", "python3-dev")
+    assert profile.comfy_args == ("--enable-triton-backend",)

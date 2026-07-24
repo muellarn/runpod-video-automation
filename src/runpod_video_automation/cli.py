@@ -338,6 +338,13 @@ def _remote_session(
             )
             remote.wait_for_ssh()
             remote.ensure_models(models, profile.model_path_aliases)
+            if profile.comfy_args:
+                remote.ensure_comfy_args(
+                    profile.comfy_args,
+                    system_packages=profile.system_packages,
+                )
+            elif profile.system_packages:
+                remote.ensure_system_packages(profile.system_packages)
             yield remote, pod_id, hourly_cost, pod
         finally:
             if pod_id and args.stop_pod:
