@@ -52,7 +52,14 @@ def _ffconcat_path(path: Path) -> str:
 
 
 @dataclass(frozen=True)
-class StartImageGeneration:
+class ImageReference:
+    path: Path | None = None
+    source: str | None = None
+    shot: int | None = None
+
+
+@dataclass(frozen=True)
+class ImageGeneration:
     adapter: str | None
     prompt: str
     negative_prompt: str
@@ -64,6 +71,208 @@ class StartImageGeneration:
     cfg: float | None
     sampler_name: str | None
     scheduler: str | None
+    workflow: str = "start_image"
+    reference_images: tuple[ImageReference, ...] = ()
+    dimensions_explicit: bool = False
+
+
+# Keep the original public name for callers that only generate start images.
+StartImageGeneration = ImageGeneration
+
+
+def _parse_image_references(
+    value: object,
+    *,
+    field: str,
+    role: str,
+    shot_index: int,
+    base_dir: Path,
+    prior_shots: list[Shot],
+) -> tuple[ImageReference, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"Scene field '{field}' must be a list")
+
+    references: list[ImageReference] = []
+    for reference_index, raw_reference in enumerate(value, start=1):
+        reference_field = f"{field}[{reference_index}]"
+        if not isinstance(raw_reference, dict):
+            raise ValueError(
+                f"Scene image reference '{reference_field}' must be an object"
+            )
+        keys = set(raw_reference)
+        if keys == {"path"}:
+            reference_path = _image_path(
+                _required_string(
+                    raw_reference["path"], f"{reference_field}.path"
+                ),
+                f"{reference_field}.path",
+                base_dir,
+            )
+            references.append(ImageReference(path=reference_path))
+            continue
+        if keys == {"source"}:
+            source = _required_string(
+                raw_reference["source"], f"{reference_field}.source"
+            )
+            if source != "current_start":
+                raise ValueError(
+                    f"Scene image reference '{reference_field}' source {source!r} "
+                    "requires a shot"
+                )
+            if role == "start":
+                raise ValueError(
+                    "Reference source 'current_start' is not valid in "
+                    "generate_start_image"
+                )
+            references.append(ImageReference(source=source))
+            continue
+        if keys == {"source", "shot"}:
+            source = _required_string(
+                raw_reference["source"], f"{reference_field}.source"
+            )
+            if source not in {"shot_start", "shot_end", "shot_continuation"}:
+                raise ValueError(
+                    f"Scene image reference '{reference_field}' has invalid source "
+                    f"{source!r}"
+                )
+            referenced_shot = raw_reference["shot"]
+            if (
+                isinstance(referenced_shot, bool)
+                or not isinstance(referenced_shot, int)
+                or referenced_shot <= 0
+            ):
+                raise ValueError(
+                    f"Scene image reference '{reference_field}.shot' must be a "
+                    "positive 1-based integer"
+                )
+            if referenced_shot >= shot_index:
+                raise ValueError(
+                    f"Scene image reference '{reference_field}' must reference a "
+                    "prior shot"
+                )
+            if source == "shot_end":
+                prior_shot = prior_shots[referenced_shot - 1]
+                if (
+                    prior_shot.end_image is None
+                    and prior_shot.generate_end_image is None
+                ):
+                    raise ValueError(
+                        f"Scene image reference '{reference_field}' uses shot_end, "
+                        f"but shot {referenced_shot} has no end image"
+                    )
+            references.append(
+                ImageReference(source=source, shot=referenced_shot)
+            )
+            continue
+        raise ValueError(
+            f"Scene image reference '{reference_field}' must contain exactly "
+            "{'path'}, {'source'}, or {'source', 'shot'}"
+        )
+    return tuple(references)
+
+
+def _parse_image_generation(
+    value: object,
+    *,
+    role: str,
+    field: str,
+    shot_index: int,
+    shot_name: str,
+    scene_width: int,
+    scene_height: int,
+    base_dir: Path,
+    prior_shots: list[Shot],
+) -> ImageGeneration:
+    if not isinstance(value, dict):
+        raise ValueError(f"Scene field '{field}' must be an object")
+    if "model_type" in value:
+        raise ValueError(
+            f"Scene field '{field}.model_type' was replaced by 'adapter'"
+        )
+
+    generation_width = int(value.get("width", scene_width))
+    generation_height = int(value.get("height", scene_height))
+    generation_seed = int(value.get("seed", 1000 + shot_index))
+    raw_adapter = value.get("adapter")
+    if raw_adapter is not None and (
+        not isinstance(raw_adapter, str) or not raw_adapter.strip()
+    ):
+        raise ValueError(
+            f"Scene field '{field}.adapter' must be a non-empty string"
+        )
+    generation_adapter = raw_adapter.strip() if raw_adapter else None
+    generation_steps = (
+        int(value["steps"]) if value.get("steps") is not None else None
+    )
+    generation_cfg = float(value["cfg"]) if value.get("cfg") is not None else None
+    if (
+        generation_width <= 0
+        or generation_height <= 0
+        or generation_width % 8
+        or generation_height % 8
+    ):
+        raise ValueError(
+            f"Scene shot {shot_name!r} generated image dimensions must be "
+            "positive multiples of 8"
+        )
+    if not 0 <= generation_seed <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError(
+            f"Scene shot {shot_name!r} generated image seed is out of range"
+        )
+    if (generation_steps is not None and generation_steps <= 0) or (
+        generation_cfg is not None and generation_cfg <= 0
+    ):
+        raise ValueError(
+            f"Scene shot {shot_name!r} generated image steps and CFG must be positive"
+        )
+
+    if "references" in value:
+        raise ValueError(
+            f"Scene field '{field}.references' was replaced by 'reference_images'"
+        )
+    references = _parse_image_references(
+        value.get("reference_images", []),
+        field=f"{field}.reference_images",
+        role=role,
+        shot_index=shot_index,
+        base_dir=base_dir,
+        prior_shots=prior_shots,
+    )
+    return ImageGeneration(
+        adapter=generation_adapter,
+        prompt=_required_string(value.get("prompt"), f"{field}.prompt"),
+        negative_prompt=_optional_string(
+            value.get("negative_prompt"), f"{field}.negative_prompt"
+        ),
+        checkpoint=(
+            _required_string(value.get("checkpoint"), f"{field}.checkpoint")
+            if value.get("checkpoint") is not None
+            else None
+        ),
+        width=generation_width,
+        height=generation_height,
+        seed=generation_seed,
+        steps=generation_steps,
+        cfg=generation_cfg,
+        sampler_name=(
+            _required_string(value.get("sampler_name"), f"{field}.sampler_name")
+            if value.get("sampler_name") is not None
+            else None
+        ),
+        scheduler=(
+            _required_string(value.get("scheduler"), f"{field}.scheduler")
+            if value.get("scheduler") is not None
+            else None
+        ),
+        workflow=_required_string(
+            value.get(
+                "workflow", "start_image" if role == "start" else "image_edit"
+            ),
+            f"{field}.workflow",
+        ),
+        reference_images=references,
+        dimensions_explicit="width" in value or "height" in value,
+    )
 
 
 @dataclass(frozen=True)
@@ -80,6 +289,7 @@ class Shot:
     seed: int
     cfg: float
     end_state: str = ""
+    generate_end_image: ImageGeneration | None = None
 
 
 @dataclass(frozen=True)
@@ -156,102 +366,21 @@ class Scene:
                 path.parent,
             )
             raw_generation = raw_shot.get("generate_start_image")
-            generation: StartImageGeneration | None = None
-            if raw_generation is not None:
-                if not isinstance(raw_generation, dict):
-                    raise ValueError(
-                        f"Scene field 'shots[{index}].generate_start_image' "
-                        "must be an object"
-                    )
-                if "model_type" in raw_generation:
-                    raise ValueError(
-                        f"Scene field 'shots[{index}].generate_start_image.model_type' "
-                        "was replaced by 'adapter'"
-                    )
-                generation_width = int(raw_generation.get("width", width))
-                generation_height = int(raw_generation.get("height", height))
-                generation_seed = int(raw_generation.get("seed", 1000 + index))
-                raw_adapter = raw_generation.get("adapter")
-                if raw_adapter is not None and (
-                    not isinstance(raw_adapter, str) or not raw_adapter.strip()
-                ):
-                    raise ValueError(
-                        f"Scene field 'shots[{index}].generate_start_image.adapter' "
-                        "must be a non-empty string"
-                    )
-                generation_adapter = raw_adapter.strip() if raw_adapter else None
-                generation_steps = (
-                    int(raw_generation["steps"])
-                    if raw_generation.get("steps") is not None
-                    else None
+            generation = (
+                _parse_image_generation(
+                    raw_generation,
+                    role="start",
+                    field=f"shots[{index}].generate_start_image",
+                    shot_index=index,
+                    shot_name=name,
+                    scene_width=width,
+                    scene_height=height,
+                    base_dir=path.parent,
+                    prior_shots=shots,
                 )
-                generation_cfg = (
-                    float(raw_generation["cfg"])
-                    if raw_generation.get("cfg") is not None
-                    else None
-                )
-                if (
-                    generation_width <= 0
-                    or generation_height <= 0
-                    or generation_width % 8
-                    or generation_height % 8
-                ):
-                    raise ValueError(
-                        f"Scene shot {name!r} generated image dimensions must be "
-                        "positive multiples of 8"
-                    )
-                if not 0 <= generation_seed <= 0xFFFFFFFFFFFFFFFF:
-                    raise ValueError(
-                        f"Scene shot {name!r} generated image seed is out of range"
-                    )
-                if (generation_steps is not None and generation_steps <= 0) or (
-                    generation_cfg is not None and generation_cfg <= 0
-                ):
-                    raise ValueError(
-                        f"Scene shot {name!r} generated image steps and CFG "
-                        "must be positive"
-                    )
-                generation_negative_prompt = _optional_string(
-                    raw_generation.get("negative_prompt"),
-                    f"shots[{index}].generate_start_image.negative_prompt",
-                )
-                generation = StartImageGeneration(
-                    adapter=generation_adapter,
-                    prompt=_required_string(
-                        raw_generation.get("prompt"),
-                        f"shots[{index}].generate_start_image.prompt",
-                    ),
-                    negative_prompt=generation_negative_prompt,
-                    checkpoint=(
-                        _required_string(
-                            raw_generation.get("checkpoint"),
-                            f"shots[{index}].generate_start_image.checkpoint",
-                        )
-                        if raw_generation.get("checkpoint") is not None
-                        else None
-                    ),
-                    width=generation_width,
-                    height=generation_height,
-                    seed=generation_seed,
-                    steps=generation_steps,
-                    cfg=generation_cfg,
-                    sampler_name=(
-                        _required_string(
-                            raw_generation.get("sampler_name"),
-                            f"shots[{index}].generate_start_image.sampler_name",
-                        )
-                        if raw_generation.get("sampler_name") is not None
-                        else None
-                    ),
-                    scheduler=(
-                        _required_string(
-                            raw_generation.get("scheduler"),
-                            f"shots[{index}].generate_start_image.scheduler",
-                        )
-                        if raw_generation.get("scheduler") is not None
-                        else None
-                    ),
-                )
+                if raw_generation is not None
+                else None
+            )
             if start_image is not None and generation is not None:
                 raise ValueError(
                     f"Scene shot {name!r} cannot set both start_image and "
@@ -262,6 +391,27 @@ class Scene:
                 f"shots[{index}].end_image",
                 path.parent,
             )
+            raw_end_generation = raw_shot.get("generate_end_image")
+            end_generation = (
+                _parse_image_generation(
+                    raw_end_generation,
+                    role="end",
+                    field=f"shots[{index}].generate_end_image",
+                    shot_index=index,
+                    shot_name=name,
+                    scene_width=width,
+                    scene_height=height,
+                    base_dir=path.parent,
+                    prior_shots=shots,
+                )
+                if raw_end_generation is not None
+                else None
+            )
+            if end_image is not None and end_generation is not None:
+                raise ValueError(
+                    f"Scene shot {name!r} cannot set both end_image and "
+                    "generate_end_image"
+                )
             if index == 1 and start_image is None and generation is None:
                 raise ValueError(
                     "The first scene shot requires start_image or "
@@ -284,6 +434,7 @@ class Scene:
                     start_image=start_image,
                     generate_start_image=generation,
                     end_image=end_image,
+                    generate_end_image=end_generation,
                     duration_seconds=duration_seconds,
                     frames=frames,
                     seed=seed,

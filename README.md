@@ -51,8 +51,7 @@ profile's Network Volume, verifies or downloads the selected files, creates the
 configured model-path aliases, and exits without opening ComfyUI or queueing a
 workflow. It is still billable while the setup Pod runs. Existing complete
 files are skipped; `.part` downloads resume after interruptions. Without
-`--model-group`, setup installs the union required by all profile workflow
-presets.
+`--model-group`, setup installs the profile's `setup_model_groups` selection.
 
 The included `workflows/wan22-i2v-14b-api.json` is an API-format conversion of
 ComfyUI's official Wan 2.2 14B I2V example. It produces a WebM output. Upload an
@@ -146,6 +145,7 @@ Each shot supports:
 - `start_image`, resolved relative to the manifest
 - `generate_start_image`, an optional Z-Image or SDXL prompt and sampling configuration
 - optional `end_image` for first/last-frame conditioning
+- `generate_end_image`, an optional reference-guided image edit used as Wan's end frame
 - `duration_seconds`, rounded to Wan's required `4n + 1` frame interval
 - `seed`, `cfg`, and an additional `negative_prompt`
 
@@ -164,6 +164,13 @@ requests generation. The profile selects the default start-image adapter; an
 individual request may set `adapter` only when it matches the selected workflow.
 Distilled Z-Image uses zeroed negative conditioning and therefore does not
 accept `negative_prompt`.
+A generated end image can use the opt-in Qwen-Image-Edit-2511 workflow. It
+accepts one to three ordered reference images and derives its output size from
+the first reference. The resulting image is passed to Wan as first/last-frame
+conditioning. Qwen's model files are not part of the default `setup` selection
+and are downloaded only when the workflow is requested. See
+[`docs/qwen-image-edit-2511.md`](docs/qwen-image-edit-2511.md) for the manifest
+schema, reference sources, review flow, and model provenance.
 A later shot may omit both fields; the orchestrator then uses the previous
 clip's final frame as the next start keyframe. Every rendered shot, including
 the final shot, writes that frame to `continuation.png` in its numbered output
@@ -213,8 +220,8 @@ uv run runpod-video scene projects/cozy-bedroom \
 `metadata.json`. It reuses a shot only when its fingerprint and the SHA-256
 hashes of its WebM and `continuation.png` match. If only the continuation file
 is missing, it is recovered locally from the true final frame and validated
-against the recorded hash. Existing generated start images are reused only
-when their own metadata matches. If every selected shot is current, no Pod is
+against the recorded hash. Existing generated start and end images are reused
+only when their own metadata matches. If every selected shot is current, no Pod is
 created; a complete scene is assembled locally from the existing clips.
 
 Input differences are printed by field, for example the effective prompt,
@@ -231,10 +238,10 @@ uv run runpod-video scene projects/my-scene --backfill-metadata
 ```
 
 Backfill requires exactly one matching video and `continuation.png` per
-existing shot. It also adopts uniquely matching generated start images, skips
+existing shot. It also adopts uniquely matching generated images, skips
 shots without outputs, writes `render-manifest.json`, and marks provenance as
 `inferred_from_existing_outputs`. It never overwrites existing shot or
-start-image sidecars; after full validation it refreshes the scene snapshot and
+generated-image sidecars; after full validation it refreshes the scene snapshot and
 rebuildable render manifest. The historical render time and the relationship
 of an existing assembled video to the shots remain explicitly unverified. The
 command cannot be combined with `--apply` or Pod lifecycle options. Use it only
@@ -282,6 +289,32 @@ image has a deterministic `NNN-name.metadata.json` sidecar that identifies the
 exact approved file; changing its prompt, seed,
 sampler, dimensions, model, or workflow causes approval to fail before Pod use.
 
+Generate all configured start and end images without loading Wan or requiring
+FFmpeg:
+
+```bash
+uv run runpod-video scene projects/cozy-bedroom \
+  --apply \
+  --generated-images-only \
+  --stop-pod
+```
+
+After reviewing `000-generated-start-image` and
+`000-generated-end-image`, require those exact outputs and render the video:
+
+```bash
+uv run runpod-video scene projects/cozy-bedroom \
+  --apply \
+  --approve-generated-images \
+  --pod-id POD_ID
+```
+
+The generic approval flag validates both roles and their ordered reference
+hashes before worker use. `--resume` also reuses matching generated images and
+does not create a Pod when every selected image and video is current. Selecting
+only part of a scene automatically includes stale generated-image dependencies
+needed by dynamic references.
+
 ## Render Metadata
 
 Every successfully rendered shot writes `metadata.json` beside its WebM and
@@ -289,7 +322,7 @@ Every successfully rendered shot writes `metadata.json` beside its WebM and
 
 - global, shot, camera, effective positive, and effective negative prompts
 - seed, CFG, steps, transition step, dimensions, FPS, and frame count
-- start/end image hashes and generated-start-image configuration
+- start/end image hashes and generated-image configuration and reference hashes
 - worker image, adapters, model groups, workflow hashes, model URLs, sizes, and hashes
 - output paths, sizes, and SHA-256 hashes
 - Pod ID, GPU, hourly price, completion time, and measured shot duration
@@ -297,7 +330,7 @@ Every successfully rendered shot writes `metadata.json` beside its WebM and
 
 Metadata is written atomically only after the WebM and exact final continuation
 frame are available. `render-manifest.json` in the output root is a rebuildable
-index of all shot and start-image metadata plus the current scene source hash
+index of all shot and generated-image metadata plus the current scene source hash
 and final stitched video hash. It is refreshed after every completed shot, so
 an interrupted run can safely continue with `--resume`.
 
@@ -390,11 +423,13 @@ uv run runpod-video cleanup --all
 ## Profiles
 
 Profiles separate infrastructure from model and workflow selection. The
-included profile defines independent `wan22-i2v` and `z-image-turbo` groups,
-plus `video` and `start_image` workflow presets. A preset binds an API workflow
-to an adapter, any number of model groups, and optional adapter defaults such as
-the checkpoint or sampler. Scene CLI overrides retain the preset's other
-values: `--workflow`, `--video-adapter`, `--video-model-group`,
+included profile defines independent `wan22-i2v`, `z-image-turbo`, and
+`qwen-image-edit-2511` groups, plus `video`, `start_image`, and `image_edit`
+workflow presets. Qwen image editing is opt-in; parameterless `setup` uses the
+profile's `setup_model_groups` and installs only Wan and Z-Image. A preset binds
+an API workflow to an adapter, any number of model groups, and optional adapter
+defaults such as the checkpoint or sampler. Scene CLI overrides retain the
+preset's other values: `--workflow`, `--video-adapter`, `--video-model-group`,
 `--start-image-workflow`, `--start-image-adapter`, and
 `--start-image-model-group` can be changed independently.
 

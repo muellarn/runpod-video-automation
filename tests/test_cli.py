@@ -294,6 +294,90 @@ def test_metadata_backfill_validates_all_shots_before_writing_sidecars(
     assert not (output_root / "scene.snapshot.json").exists()
 
 
+def test_metadata_backfill_rejects_stale_existing_metadata_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"start")
+    manifest = tmp_path / "scene.json"
+    scene = {
+        "title": "Complete Set",
+        "global_prompt": "Adult character",
+        "shots": [
+            {"name": "One", "prompt": "A", "start_image": "start.png"},
+            {"name": "Two", "prompt": "B"},
+        ],
+    }
+    manifest.write_text(json.dumps(scene))
+    output_root = tmp_path / "output"
+    for index, name in ((1, "one"), (2, "two")):
+        shot_dir = output_root / f"{index:03d}-{name}"
+        shot_dir.mkdir(parents=True)
+        (shot_dir / f"{name}.webm").write_bytes(f"video-{index}".encode())
+        (shot_dir / "continuation.png").write_bytes(f"frame-{index}".encode())
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(
+        cli,
+        "load_workflow",
+        lambda path: {"1": {"class_type": "Test", "inputs": {}}},
+    )
+    args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--backfill-metadata",
+            "--output",
+            str(output_root),
+        ]
+    )
+    cli.render_scene(args)
+    second_metadata = output_root / "002-two/metadata.json"
+    second_metadata.unlink()
+    scene["shots"][0]["prompt"] = "Changed"
+    manifest.write_text(json.dumps(scene))
+
+    with pytest.raises(ValueError, match="existing shot metadata"):
+        cli.render_scene(args)
+
+    assert not second_metadata.exists()
+
+
+def test_metadata_output_path_rejects_paths_outside_output_root(tmp_path: Path) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    metadata_path = tmp_path / "metadata.json"
+
+    for unsafe_path in (str(outside), "../outside.png"):
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "output": {
+                        "path": unsafe_path,
+                        "sha256": cli.sha256_file(outside),
+                    }
+                }
+            )
+        )
+        assert cli._metadata_output_path(metadata_path, output_root) is None
+
+    link = output_root / "linked.png"
+    link.symlink_to(outside)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "output": {
+                    "path": link.name,
+                    "sha256": cli.sha256_file(outside),
+                }
+            }
+        )
+    )
+    assert cli._metadata_output_path(metadata_path, output_root) is None
+
+
 def test_scene_parser_accepts_existing_pod_restart() -> None:
     args = build_parser().parse_args(
         ["scene", "scene.json", "--apply", "--pod-id", "pod-1", "--restart"]
