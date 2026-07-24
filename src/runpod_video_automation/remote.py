@@ -4,12 +4,15 @@ import shlex
 import socket
 import subprocess
 import time
-from hashlib import sha256
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from runpod_video_automation.config import ModelFile, ModelPathAlias
+
+if TYPE_CHECKING:
+    from runpod_video_automation.prompt_refiner.config import PromptRefinerProfile
 
 
 class RemoteWorker:
@@ -183,8 +186,6 @@ class RemoteWorker:
         *,
         system_packages: tuple[str, ...] = (),
     ) -> None:
-        if not args:
-            return
         digest = sha256("\0".join(args).encode()).hexdigest()
         quoted_args = " ".join(shlex.quote(arg) for arg in args)
         package_setup = ""
@@ -216,8 +217,70 @@ class RemoteWorker:
             timeout=20 * 60 if system_packages else 5 * 60,
         )
 
+    def stop_comfyui(self) -> None:
+        self.run(
+            "pids=$(pgrep -f '/[c]omfyui/main.py' || true); "
+            'if test -n "$pids"; then kill $pids 2>/dev/null || true; '
+            "deadline=$((SECONDS + 60)); "
+            'while test -n "$(pgrep -f \'/[c]omfyui/main.py\' || true)" '
+            '&& test "$SECONDS" -lt "$deadline"; do sleep 1; done; '
+            "pids=$(pgrep -f '/[c]omfyui/main.py' || true); "
+            'if test -n "$pids"; then kill -KILL $pids 2>/dev/null || true; fi; fi; '
+            "rm -f /tmp/comfyui.pid /tmp/runpod-video-comfy-args",
+            timeout=90,
+        )
+
+    def stop_koboldcpp(self) -> None:
+        self.run(
+            "pid_file=/tmp/runpod-video-koboldcpp.pid; "
+            "runtime_file=/tmp/runpod-video-koboldcpp-runtime; "
+            'pid=$(cat "$pid_file" 2>/dev/null || true); '
+            'runtime=$(cat "$runtime_file" 2>/dev/null || true); '
+            'if test -n "$pid" && test -n "$runtime" '
+            '&& test -r "/proc/$pid/cmdline" '
+            "&& tr '\\0' ' ' < \"/proc/$pid/cmdline\" | "
+            'grep -Fq -- "$runtime"; then '
+            'kill -- -"$pid" 2>/dev/null || true; deadline=$((SECONDS + 60)); '
+            'while kill -0 -- -"$pid" 2>/dev/null '
+            '&& test "$SECONDS" -lt "$deadline"; do sleep 1; done; '
+            'if kill -0 -- -"$pid" 2>/dev/null; then '
+            'kill -KILL -- -"$pid" 2>/dev/null || true; sleep 1; fi; '
+            'if kill -0 -- -"$pid" 2>/dev/null; then exit 1; fi; fi; '
+            'rm -f "$pid_file" "$runtime_file"',
+            timeout=90,
+        )
+
     @contextmanager
-    def comfy_tunnel(self) -> Iterator[str]:
+    def koboldcpp_process(
+        self,
+        profile: PromptRefinerProfile,
+    ) -> Iterator[None]:
+        self.stop_koboldcpp()
+        runtime = shlex.quote(profile.remote_runtime_path)
+        model = shlex.quote(profile.remote_model_path)
+        command = (
+            f"chmod 0755 {runtime}; "
+            "setsid nohup "
+            f"{runtime} --model {model} --usecuda 0 "
+            f"--gpulayers {profile.gpu_layers} "
+            f"--contextsize {profile.context_size} "
+            f"--host 127.0.0.1 --port {profile.port} "
+            "--jinja --jinja_kwargs '{\"enable_thinking\":false}' "
+            "--quiet --skiplauncher "
+            ">/tmp/runpod-video-koboldcpp.log 2>&1 </dev/null & "
+            "echo $! >/tmp/runpod-video-koboldcpp.pid; "
+            f"printf '%s\\n' {runtime} >/tmp/runpod-video-koboldcpp-runtime"
+        )
+        self.run(command, timeout=30)
+        try:
+            yield
+        finally:
+            self.stop_koboldcpp()
+
+    @contextmanager
+    def tunnel(self, remote_port: int) -> Iterator[str]:
+        if not 1 <= remote_port <= 65535:
+            raise ValueError("Remote tunnel port is out of range")
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             local_port = sock.getsockname()[1]
@@ -226,7 +289,7 @@ class RemoteWorker:
                 *self._ssh_base[:-1],
                 "-N",
                 "-L",
-                f"{local_port}:127.0.0.1:8188",
+                f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
                 self._ssh_base[-1],
             ],
             stdout=subprocess.DEVNULL,
@@ -246,3 +309,8 @@ class RemoteWorker:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+
+    @contextmanager
+    def comfy_tunnel(self) -> Iterator[str]:
+        with self.tunnel(8188) as base_url:
+            yield base_url

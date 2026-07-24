@@ -101,6 +101,10 @@ It combines a global character/style description with separate action and
 camera direction for every shot. All shots render on the same Pod, so models
 are downloaded and initialized once.
 
+See [`docs/scene-manifest-reference.md`](docs/scene-manifest-reference.md) for
+the complete field-by-field manifest, prompting, continuity, sampling, image,
+resume, and metadata reference.
+
 Scenes are organized as self-contained project bundles:
 
 ```text
@@ -282,6 +286,39 @@ image has a deterministic `NNN-name.metadata.json` sidecar that identifies the
 exact approved file; changing its prompt, seed,
 sampler, dimensions, model, or workflow causes approval to fail before Pod use.
 
+## Prompt Refinement
+
+Prompt refinement is opt-in and runs a pinned open-weight Qwen GGUF locally on
+the RunPod worker through KoboldCpp. It rewrites only prompt-bearing scene and
+shot fields; names, order, paths, seeds, sampling, and other manifest values
+remain source-controlled.
+
+Refine and render sequentially on the same Pod:
+
+```bash
+uv run runpod-video scene projects/cozy-bedroom \
+  --apply \
+  --refine-prompts
+```
+
+Refine without rendering, or open the loopback-only browser chat:
+
+```bash
+uv run runpod-video refine projects/cozy-bedroom --apply
+uv run runpod-video chat --apply
+```
+
+Results are cached from the source manifest, pinned model and runtime, prompts,
+reference document, and generation settings. A valid cache can be inspected or
+rendered without rerunning the language model; `--force --apply` refreshes it.
+On a cache miss the integrated command stops ComfyUI, runs the refiner, fully
+stops it to release VRAM, then starts ComfyUI on the same worker. Existing Pods
+require explicit `--pod-id POD_ID --restart` whenever the refiner must run.
+
+Preload its artifacts with `setup --include-refiner`. See
+[`docs/prompt-refiner.md`](docs/prompt-refiner.md) for cache, lifecycle, browser,
+security, model, and provenance details.
+
 ## Render Metadata
 
 Every successfully rendered shot writes `metadata.json` beside its WebM and
@@ -292,6 +329,7 @@ Every successfully rendered shot writes `metadata.json` beside its WebM and
 - start/end image hashes and generated-start-image configuration
 - worker image, adapters, model groups, workflow hashes, model URLs, sizes, and hashes
 - output paths, sizes, and SHA-256 hashes
+- prompt-refinement cache and artifact provenance when enabled
 - Pod ID, GPU, hourly price, completion time, and measured shot duration
 - a canonical fingerprint of all quality-relevant inputs
 

@@ -85,6 +85,7 @@ def build_shot_inputs(
     generation: ResolvedStartImageGeneration | None = None,
     starting_state: str = "",
     end_image: Path | None = None,
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     positive_parts = [scene.global_prompt]
     if starting_state:
@@ -152,6 +153,11 @@ def build_shot_inputs(
                 {"source": alias.source, "target": alias.target}
                 for alias in profile.model_path_aliases
             ],
+            **(
+                {"prompt_refinement": prompt_refinement}
+                if prompt_refinement is not None
+                else {}
+            ),
         },
     }
 
@@ -164,6 +170,7 @@ def build_start_image_inputs(
     generation: ResolvedStartImageGeneration,
     start_workflow: WorkflowSelection,
     start_workflow_sha256: str,
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if shot.generate_start_image is None:
         raise ValueError(f"Shot {index} does not configure start image generation")
@@ -180,6 +187,11 @@ def build_start_image_inputs(
                 {"source": alias.source, "target": alias.target}
                 for alias in profile.model_path_aliases
             ],
+            **(
+                {"prompt_refinement": prompt_refinement}
+                if prompt_refinement is not None
+                else {}
+            ),
         },
     }
 
@@ -358,6 +370,7 @@ def write_render_manifest(
     selected_shots: list[int],
     final_video: Path | None = None,
     provenance: str | None = None,
+    prompt_refinement: dict[str, Any] | None = None,
 ) -> None:
     shots = []
     for index, shot in enumerate(scene.shots, start=1):
@@ -377,6 +390,11 @@ def write_render_manifest(
         "schema_version": SCHEMA_VERSION,
         "updated_at": datetime.now(UTC).isoformat(),
         "provenance": provenance,
+        **(
+            {"prompt_refinement": prompt_refinement}
+            if prompt_refinement is not None
+            else {}
+        ),
         "scene": {
             "title": scene.title,
             "source": str(scene_path.resolve()),

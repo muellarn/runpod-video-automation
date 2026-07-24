@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from runpod_video_automation.config import ModelFile, ModelPathAlias
+from runpod_video_automation.prompt_refiner.config import PromptRefinerProfile
 from runpod_video_automation.remote import RemoteWorker
 
 
@@ -164,3 +165,104 @@ def test_ensure_comfy_args_restarts_only_for_a_new_configuration(
     assert "kill -0" in command
     assert "nohup /opt/venv/bin/python" in command
     assert timeout == 20 * 60
+
+
+def test_ensure_comfy_args_starts_comfy_without_extra_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
+    monkeypatch.setattr(
+        worker,
+        "run",
+        lambda command, timeout=None: calls.append(command),
+    )
+
+    worker.ensure_comfy_args(())
+
+    assert len(calls) == 1
+    assert "nohup /opt/venv/bin/python -u /comfyui/main.py" in calls[0]
+
+
+def test_stop_comfyui_process_pattern_does_not_match_its_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
+    monkeypatch.setattr(
+        worker,
+        "run",
+        lambda command, timeout=None: calls.append(command),
+    )
+
+    worker.stop_comfyui()
+
+    assert "/[c]omfyui/main.py" in calls[0]
+    assert "pgrep -f '/comfyui/main.py'" not in calls[0]
+    subprocess.run(["bash", "-n", "-c", calls[0]], check=True)
+
+
+def test_koboldcpp_process_is_loopback_only_and_stops_after_use(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
+    system_prompt = tmp_path / "system.txt"
+    system_prompt.write_text("Prompt")
+    profile = PromptRefinerProfile(
+        name="test",
+        runtime=ModelFile(
+            "https://example.test/runtime", "tools/koboldcpp", 1, "a" * 64
+        ),
+        model=ModelFile(
+            "https://example.test/model", "models/model.gguf", 2, "b" * 64
+        ),
+        system_prompt_path=system_prompt,
+        reference_document_path=None,
+        port=5001,
+        context_size=4096,
+        max_tokens=1024,
+        gpu_layers=65,
+        seed=42,
+        temperature=0.2,
+        top_p=0.8,
+        top_k=20,
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        worker, "stop_koboldcpp", lambda: events.append("stop")
+    )
+    monkeypatch.setattr(
+        worker,
+        "run",
+        lambda command, timeout=None: events.append(command),
+    )
+
+    with worker.koboldcpp_process(profile):
+        events.append("yield")
+
+    assert events[0] == "stop"
+    assert "--host 127.0.0.1 --port 5001" in events[1]
+    assert "--contextsize 4096" in events[1]
+    assert "runpod-video-koboldcpp-runtime" in events[1]
+    subprocess.run(["bash", "-n", "-c", events[1]], check=True)
+    assert events[2:] == ["yield", "stop"]
+
+
+def test_stop_koboldcpp_verifies_the_recorded_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
+    monkeypatch.setattr(
+        worker,
+        "run",
+        lambda command, timeout=None: calls.append(command),
+    )
+
+    worker.stop_koboldcpp()
+
+    assert "runpod-video-koboldcpp-runtime" in calls[0]
+    assert 'grep -Fq -- "$runtime"' in calls[0]
+    assert "koboldcpp-linux-x64" not in calls[0]
+    subprocess.run(["bash", "-n", "-c", calls[0]], check=True)

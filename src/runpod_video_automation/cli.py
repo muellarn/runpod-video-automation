@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import webbrowser
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,13 @@ from runpod_video_automation.adapters import (
 )
 from runpod_video_automation.comfy_client import ComfyClient
 from runpod_video_automation.config import ModelFile, Profile, WorkflowSelection
+from runpod_video_automation.prompt_refiner import (
+    PromptRefinerProfile,
+    RefinementResult,
+    load_cached_refinement,
+    refine_scene,
+)
+from runpod_video_automation.prompt_refiner.client import KoboldClient
 from runpod_video_automation.remote import RemoteWorker
 from runpod_video_automation.render_metadata import (
     build_shot_inputs,
@@ -55,6 +63,11 @@ def _profile_path(value: str | None) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def _refiner_profile_path(value: str | None) -> Path:
+    path = Path(value or "profiles/prompt-refiner-qwen36.json").expanduser()
+    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
 def _scene_path(value: str) -> Path:
@@ -283,6 +296,7 @@ def _remote_session(
     profile: Profile,
     *,
     models: tuple[ModelFile, ...],
+    prepare_comfy: bool = True,
 ) -> Iterator[tuple[RemoteWorker, str, float | None, dict[str, Any]]]:
     ssh_key = _ssh_key(args.ssh_key)
     requested_pod_id: str | None = args.pod_id
@@ -338,12 +352,12 @@ def _remote_session(
             )
             remote.wait_for_ssh()
             remote.ensure_models(models, profile.model_path_aliases)
-            if profile.comfy_args:
+            if prepare_comfy and profile.comfy_args:
                 remote.ensure_comfy_args(
                     profile.comfy_args,
                     system_packages=profile.system_packages,
                 )
-            elif profile.system_packages:
+            elif prepare_comfy and profile.system_packages:
                 remote.ensure_system_packages(profile.system_packages)
             yield remote, pod_id, hourly_cost, pod
         finally:
@@ -359,6 +373,45 @@ def _remote_session(
 
 
 @contextmanager
+def _comfy_session(
+    args: argparse.Namespace,
+    profile: Profile,
+    *,
+    remote_details: tuple[RemoteWorker, str, float | None, dict[str, Any]],
+    models: tuple[ModelFile, ...] | None = None,
+) -> Iterator[ComfyClient]:
+    remote, pod_id, hourly_cost, pod = remote_details
+    if models is not None:
+        remote.ensure_models(models, profile.model_path_aliases)
+        remote.ensure_comfy_args(
+            profile.comfy_args,
+            system_packages=profile.system_packages,
+        )
+    with remote.comfy_tunnel() as base_url:
+        comfy = ComfyClient(base_url)
+        try:
+            stats = comfy.wait_until_ready()
+            devices = stats.get("devices", [])
+            if devices:
+                print(f"ComfyUI device: {devices[0].get('name', 'unknown')}")
+            comfy.runtime_metadata = {
+                "pod_id": pod_id,
+                "gpu": (
+                    devices[0].get("name", "unknown")
+                    if devices
+                    else (pod.get("gpu") or {}).get("displayName", "unknown")
+                ),
+                "cost_per_hour": hourly_cost,
+            }
+            if getattr(args, "restart", False):
+                print("Interrupting active ComfyUI execution and clearing queue")
+                comfy.interrupt_and_clear()
+            yield comfy
+        finally:
+            comfy.close()
+
+
+@contextmanager
 def _worker_session(
     args: argparse.Namespace,
     profile: Profile,
@@ -371,29 +424,118 @@ def _worker_session(
         else profile.models_for_groups(profile.default_model_groups)
     )
     with _remote_session(args, profile, models=selected_models) as remote_details:
-        remote, pod_id, hourly_cost, pod = remote_details
-        with remote.comfy_tunnel() as base_url:
-            comfy = ComfyClient(base_url)
+        with _comfy_session(
+            args,
+            profile,
+            remote_details=remote_details,
+        ) as comfy:
+            yield comfy
+
+
+def _validate_refiner_args(args: argparse.Namespace) -> None:
+    _validate_execution_args(args)
+    if getattr(args, "idle_stop_minutes", None) is not None:
+        raise ValueError("Prompt refiner commands do not support --idle-stop-minutes")
+    if getattr(args, "pod_id", None) and not getattr(args, "restart", False):
+        raise ValueError("Refiner use with --pod-id requires --restart")
+
+
+def _refine_with_remote(
+    *,
+    remote: RemoteWorker,
+    source_path: Path,
+    output_root: Path,
+    profile: PromptRefinerProfile,
+    force: bool,
+    start_timeout: int,
+) -> RefinementResult:
+    remote.stop_comfyui()
+    with remote.koboldcpp_process(profile):
+        with remote.tunnel(profile.port) as base_url:
+            client = KoboldClient(base_url)
             try:
-                stats = comfy.wait_until_ready()
-                devices = stats.get("devices", [])
-                if devices:
-                    print(f"ComfyUI device: {devices[0].get('name', 'unknown')}")
-                comfy.runtime_metadata = {
-                    "pod_id": pod_id,
-                    "gpu": (
-                        devices[0].get("name", "unknown")
-                        if devices
-                        else (pod.get("gpu") or {}).get("displayName", "unknown")
-                    ),
-                    "cost_per_hour": hourly_cost,
-                }
-                if getattr(args, "restart", False):
-                    print("Interrupting active ComfyUI execution and clearing queue")
-                    comfy.interrupt_and_clear()
-                yield comfy
+                info = client.wait_until_ready(timeout_seconds=start_timeout)
+                print(f"Prompt refiner ready: {info}")
+                return refine_scene(
+                    client=client,
+                    source_path=source_path,
+                    output_root=output_root,
+                    profile=profile,
+                    force=force,
+                )
             finally:
-                comfy.close()
+                client.close()
+
+
+def refine(args: argparse.Namespace) -> None:
+    source_path = _scene_path(args.manifest)
+    Scene.load(source_path)
+    output_root = _scene_output_root(source_path, args.output)
+    refiner_profile = PromptRefinerProfile.load(
+        _refiner_profile_path(args.refiner_profile)
+    )
+    if not args.force:
+        cached = load_cached_refinement(
+            source_path=source_path,
+            output_root=output_root,
+            profile=refiner_profile,
+        )
+        if cached is not None:
+            print(f"Refined scene cache: {cached.manifest_path}")
+            return
+    if not args.apply:
+        raise RuntimeError("Refinement cache miss; use --apply to create resources")
+    _validate_refiner_args(args)
+    infrastructure = Profile.load(_profile_path(args.profile))
+    with _remote_session(
+        args,
+        infrastructure,
+        models=refiner_profile.artifacts,
+        prepare_comfy=False,
+    ) as remote_details:
+        result = _refine_with_remote(
+            remote=remote_details[0],
+            source_path=source_path,
+            output_root=output_root,
+            profile=refiner_profile,
+            force=args.force,
+            start_timeout=args.start_timeout,
+        )
+    print(f"Refined scene: {result.manifest_path}")
+
+
+def chat(args: argparse.Namespace) -> None:
+    if not args.apply:
+        raise RuntimeError("Refusing to create billable resources without --apply")
+    _validate_refiner_args(args)
+    if args.duration_seconds is not None and args.duration_seconds <= 0:
+        raise ValueError("--duration-seconds must be positive")
+    infrastructure = Profile.load(_profile_path(args.profile))
+    refiner_profile = PromptRefinerProfile.load(
+        _refiner_profile_path(args.refiner_profile)
+    )
+    with _remote_session(
+        args,
+        infrastructure,
+        models=refiner_profile.artifacts,
+        prepare_comfy=False,
+    ) as remote_details:
+        remote = remote_details[0]
+        remote.stop_comfyui()
+        with remote.koboldcpp_process(refiner_profile):
+            with remote.tunnel(refiner_profile.port) as base_url:
+                client = KoboldClient(base_url)
+                try:
+                    client.wait_until_ready(timeout_seconds=args.start_timeout)
+                finally:
+                    client.close()
+                print(f"Prompt refiner chat: {base_url}/", flush=True)
+                if not args.no_browser:
+                    webbrowser.open(f"{base_url}/")
+                if args.duration_seconds is not None:
+                    time.sleep(args.duration_seconds)
+                else:
+                    input("Press Enter to close the chat server... ")
 
 
 def setup(args: argparse.Namespace) -> None:
@@ -403,6 +545,11 @@ def setup(args: argparse.Namespace) -> None:
     profile = Profile.load(_profile_path(args.profile))
     groups = tuple(args.model_group or profile.default_model_groups)
     models = profile.models_for_groups(groups)
+    if args.include_refiner:
+        refiner_profile = PromptRefinerProfile.load(
+            _refiner_profile_path(args.refiner_profile)
+        )
+        models = tuple(dict.fromkeys((*models, *refiner_profile.artifacts)))
     print(f"Model groups: {', '.join(groups) if groups else '(none)'}")
     print(f"Model files: {len(models)}")
     with _remote_session(args, profile, models=models):
@@ -765,7 +912,86 @@ def _selected_shot_entries(
 
 def render_scene(args: argparse.Namespace) -> None:
     scene_path = _scene_path(args.manifest)
-    scene = Scene.load(scene_path)
+    source_scene = Scene.load(scene_path)
+    if not getattr(args, "refine_prompts", False):
+        if getattr(args, "force", False) or getattr(
+            args, "refiner_profile", None
+        ) is not None:
+            raise ValueError("--force and --refiner-profile require --refine-prompts")
+        _render_scene_effective(args, scene_path, source_scene)
+        return
+    if getattr(args, "backfill_metadata", False):
+        raise ValueError("--refine-prompts cannot be combined with --backfill-metadata")
+
+    output_root = _scene_output_root(scene_path, args.output)
+    refiner_profile = PromptRefinerProfile.load(
+        _refiner_profile_path(args.refiner_profile)
+    )
+    refinement = None
+    if not args.force:
+        refinement = load_cached_refinement(
+            source_path=scene_path,
+            output_root=output_root,
+            profile=refiner_profile,
+        )
+    if refinement is not None:
+        print(f"Refined scene cache: {refinement.manifest_path}")
+        _render_scene_effective(
+            args,
+            scene_path,
+            refinement.scene,
+            refinement=refinement,
+        )
+        return
+    if args.plan:
+        raise RuntimeError(
+            "Refinement cache miss; use scene --apply --refine-prompts to create it"
+        )
+    if not args.apply:
+        raise RuntimeError("Refinement cache miss; use --apply to create resources")
+    _validate_execution_args(args)
+    if args.pod_id and not args.restart:
+        raise ValueError("Prompt refinement with --pod-id requires --restart")
+
+    infrastructure = Profile.load(_profile_path(args.profile))
+    with _remote_session(
+        args,
+        infrastructure,
+        models=refiner_profile.artifacts,
+        prepare_comfy=False,
+    ) as remote_details:
+        refinement = _refine_with_remote(
+            remote=remote_details[0],
+            source_path=scene_path,
+            output_root=output_root,
+            profile=refiner_profile,
+            force=args.force,
+            start_timeout=args.start_timeout,
+        )
+        print(f"Refined scene: {refinement.manifest_path}")
+        _render_scene_effective(
+            args,
+            scene_path,
+            refinement.scene,
+            refinement=refinement,
+            remote_details=remote_details,
+        )
+
+
+def _render_scene_effective(
+    args: argparse.Namespace,
+    scene_path: Path,
+    scene: Scene,
+    *,
+    refinement: RefinementResult | None = None,
+    remote_details: (
+        tuple[RemoteWorker, str, float | None, dict[str, Any]] | None
+    ) = None,
+) -> None:
+    prompt_refinement = refinement.provenance if refinement is not None else None
+    metadata_scene_path = (
+        refinement.manifest_path if refinement is not None else scene_path
+    )
     shot_entries = _selected_shot_entries(scene, args)
     selected_numbers = {index for index, _ in shot_entries}
     all_shots_selected = len(selected_numbers) == len(scene.shots)
@@ -860,7 +1086,7 @@ def render_scene(args: argparse.Namespace) -> None:
     output_root = _scene_output_root(scene_path, args.output)
     if not args.start_image_only and shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to assemble scene outputs")
-    scene_snapshot = _snapshot_scene(scene_path, output_root)
+    scene_snapshot = _snapshot_scene(metadata_scene_path, output_root)
     print(f"Scene snapshot: {scene_snapshot}")
     input_snapshots: dict[tuple[int, str], Path] = {}
     for index, shot in shot_entries:
@@ -928,6 +1154,7 @@ def render_scene(args: argparse.Namespace) -> None:
             generation=generations[index],
             start_workflow=start_selection,
             start_workflow_sha256=start_workflow_sha256,
+            prompt_refinement=prompt_refinement,
         )
         start_metadata = read_metadata(
             _start_image_metadata_path(output_root, index, shot.name)
@@ -987,6 +1214,7 @@ def render_scene(args: argparse.Namespace) -> None:
                     scene.shots[index - 2].end_state if index > 1 else ""
                 ),
                 end_image=input_snapshots.get((index, "end")),
+                prompt_refinement=prompt_refinement,
             )
             metadata_path = _shot_dir(output_root, index, shot.name) / "metadata.json"
             metadata = read_metadata(metadata_path)
@@ -1063,9 +1291,10 @@ def render_scene(args: argparse.Namespace) -> None:
             )
             write_render_manifest(
                 output_root,
-                scene_path,
+                metadata_scene_path,
                 scene,
                 selected_shots=sorted(selected_numbers),
+                prompt_refinement=prompt_refinement,
             )
             return
         ordered_videos = [resumed_videos[index] for index, _ in shot_entries]
@@ -1074,18 +1303,20 @@ def render_scene(args: argparse.Namespace) -> None:
             concatenate_webm(ordered_videos, final_video)
             write_render_manifest(
                 output_root,
-                scene_path,
+                metadata_scene_path,
                 scene,
                 selected_shots=sorted(selected_numbers),
                 final_video=final_video,
+                prompt_refinement=prompt_refinement,
             )
             print(f"Scene assembled: {final_video}")
         else:
             write_render_manifest(
                 output_root,
-                scene_path,
+                metadata_scene_path,
                 scene,
                 selected_shots=sorted(selected_numbers),
+                prompt_refinement=prompt_refinement,
             )
             print(f"Resume complete: {len(ordered_videos)} selected shot(s) ready")
         return
@@ -1107,7 +1338,17 @@ def render_scene(args: argparse.Namespace) -> None:
     rendered_videos = dict(resumed_videos)
     generated_image_count = 0
 
-    with _worker_session(args, profile, models=required_models) as comfy:
+    session = (
+        _worker_session(args, profile, models=required_models)
+        if remote_details is None
+        else _comfy_session(
+            args,
+            profile,
+            remote_details=remote_details,
+            models=required_models,
+        )
+    )
+    with session as comfy:
         for index, shot in pending_entries:
             if args.start_image_only and shot.generate_start_image is None:
                 continue
@@ -1169,6 +1410,7 @@ def render_scene(args: argparse.Namespace) -> None:
                     generation=generations[index],
                     start_workflow=start_selection,
                     start_workflow_sha256=start_workflow_sha256,
+                    prompt_refinement=prompt_refinement,
                 )
                 write_start_image_metadata(
                     _start_image_metadata_path(output_root, index, shot.name),
@@ -1180,9 +1422,10 @@ def render_scene(args: argparse.Namespace) -> None:
                 )
                 write_render_manifest(
                     output_root,
-                    scene_path,
+                    metadata_scene_path,
                     scene,
                     selected_shots=sorted(selected_numbers),
+                    prompt_refinement=prompt_refinement,
                 )
             if args.start_image_only:
                 continue
@@ -1210,6 +1453,7 @@ def render_scene(args: argparse.Namespace) -> None:
                     scene.shots[index - 2].end_state if index > 1 else ""
                 ),
                 end_image=input_snapshots.get((index, "end")),
+                prompt_refinement=prompt_refinement,
             )
             start_remote = f"scene-{index:03d}-start{start_image.suffix.lower() or '.png'}"
             start_remote = _retry_operation(
@@ -1288,17 +1532,19 @@ def render_scene(args: argparse.Namespace) -> None:
             )
             write_render_manifest(
                 output_root,
-                scene_path,
+                metadata_scene_path,
                 scene,
                 selected_shots=sorted(selected_numbers),
+                prompt_refinement=prompt_refinement,
             )
 
     if args.start_image_only:
         write_render_manifest(
             output_root,
-            scene_path,
+            metadata_scene_path,
             scene,
             selected_shots=sorted(selected_numbers),
+            prompt_refinement=prompt_refinement,
         )
         print(f"Generated {generated_image_count} start keyframe(s) in {output_root}")
         return
@@ -1309,9 +1555,10 @@ def render_scene(args: argparse.Namespace) -> None:
             print(f"Shot rendered: {video}")
         write_render_manifest(
             output_root,
-            scene_path,
+            metadata_scene_path,
             scene,
             selected_shots=sorted(selected_numbers),
+            prompt_refinement=prompt_refinement,
         )
         return
     final_video = output_root / f"{slugify(scene.title)}{video_output_suffix}"
@@ -1320,10 +1567,11 @@ def render_scene(args: argparse.Namespace) -> None:
     )
     write_render_manifest(
         output_root,
-        scene_path,
+        metadata_scene_path,
         scene,
         selected_shots=sorted(selected_numbers),
         final_video=final_video,
+        prompt_refinement=prompt_refinement,
     )
     print(f"Scene assembled: {final_video}")
 
@@ -1335,15 +1583,35 @@ def cleanup(args: argparse.Namespace) -> None:
             name = str(pod.get("name", ""))
             if not name.startswith("runpod-video-"):
                 continue
+            pod_id = str(pod["id"])
+            if args.all:
+                print(f"Terminating managed pod {pod_id} ({name})")
+                client.terminate_pod(pod_id)
+                continue
             created_raw = pod.get("createdAt") or pod.get("lastStartedAt")
             if not isinstance(created_raw, str):
-                if args.all:
-                    client.terminate_pod(str(pod["id"]))
+                print(f"Skipping pod {pod_id}: no creation timestamp")
                 continue
-            created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
-            if args.all or created < cutoff:
-                print(f"Terminating stale pod {pod['id']} ({name})")
-                client.terminate_pod(str(pod["id"]))
+            normalized = created_raw.removesuffix(" UTC")
+            if (
+                len(normalized) >= 6
+                and normalized[-6] == " "
+                and normalized[-5] in "+-"
+                and normalized[-4:].isdigit()
+            ):
+                normalized = normalized[:-6] + normalized[-5:]
+            try:
+                created = datetime.fromisoformat(
+                    normalized.replace("Z", "+00:00")
+                )
+            except ValueError:
+                print(f"Skipping pod {pod_id}: invalid timestamp {created_raw!r}")
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if created < cutoff:
+                print(f"Terminating stale pod {pod_id} ({name})")
+                client.terminate_pod(pod_id)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1366,6 +1634,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Model group to install; repeat as needed (defaults to profile presets)",
     )
+    setup_parser.add_argument(
+        "--include-refiner",
+        action="store_true",
+        help="Also install the pinned prompt-refiner runtime and model",
+    )
+    setup_parser.add_argument("--refiner-profile")
     setup_parser.add_argument("--ssh-key")
     setup_parser.add_argument("--pod-id", help="Reuse an existing Pod")
     setup_parser.add_argument("--start-timeout", type=int, default=900)
@@ -1385,6 +1659,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --keep-pod, stop the Pod after this many idle minutes",
     )
     setup_parser.set_defaults(func=setup)
+
+    refine_parser = subparsers.add_parser(
+        "refine", help="Refine and cache prompt fields in a scene manifest"
+    )
+    refine_parser.add_argument(
+        "manifest", help="Scene JSON file or project directory containing scene.json"
+    )
+    refine_parser.add_argument("--profile")
+    refine_parser.add_argument("--refiner-profile")
+    refine_parser.add_argument("--output")
+    refine_parser.add_argument("--ssh-key")
+    refine_parser.add_argument("--pod-id", help="Reuse an existing Pod")
+    refine_parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Stop the active workload before refinement; requires --pod-id",
+    )
+    refine_parser.add_argument("--start-timeout", type=int, default=900)
+    refine_parser.add_argument(
+        "--force", action="store_true", help="Ignore a valid refinement cache entry"
+    )
+    refine_parser.add_argument(
+        "--apply", action="store_true", help="Allow creation of billable resources"
+    )
+    refine_lifecycle = refine_parser.add_mutually_exclusive_group()
+    refine_lifecycle.add_argument("--keep-pod", action="store_true")
+    refine_lifecycle.add_argument("--stop-pod", action="store_true")
+    refine_parser.set_defaults(func=refine)
+
+    chat_parser = subparsers.add_parser(
+        "chat", help="Open the prompt-refiner web UI through a loopback SSH tunnel"
+    )
+    chat_parser.add_argument("--profile")
+    chat_parser.add_argument("--refiner-profile")
+    chat_parser.add_argument("--ssh-key")
+    chat_parser.add_argument("--pod-id", help="Reuse an existing Pod")
+    chat_parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Stop the active workload before starting chat; requires --pod-id",
+    )
+    chat_parser.add_argument("--start-timeout", type=int, default=900)
+    chat_parser.add_argument("--duration-seconds", type=float)
+    chat_parser.add_argument("--no-browser", action="store_true")
+    chat_parser.add_argument(
+        "--apply", action="store_true", help="Allow creation of billable resources"
+    )
+    chat_lifecycle = chat_parser.add_mutually_exclusive_group()
+    chat_lifecycle.add_argument("--keep-pod", action="store_true")
+    chat_lifecycle.add_argument("--stop-pod", action="store_true")
+    chat_parser.set_defaults(func=chat)
 
     run_parser = subparsers.add_parser("run", help="Provision, render, download, and terminate")
     run_parser.add_argument("workflow", help="ComfyUI workflow exported in API format")
@@ -1473,6 +1798,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--backfill-metadata",
         action="store_true",
         help="Infer missing metadata from existing local outputs without using a Pod",
+    )
+    scene_parser.add_argument(
+        "--refine-prompts",
+        action="store_true",
+        help="Refine prompt fields before rendering, using a deterministic cache",
+    )
+    scene_parser.add_argument("--refiner-profile")
+    scene_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore a valid prompt-refinement cache entry",
     )
     shot_selection = scene_parser.add_mutually_exclusive_group()
     shot_selection.add_argument(

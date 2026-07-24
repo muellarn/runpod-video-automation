@@ -9,6 +9,7 @@ from runpod_video_automation import cli
 from runpod_video_automation.adapters import resolve_start_image_generation
 from runpod_video_automation.cli import build_parser
 from runpod_video_automation.config import ModelFile, Profile, WorkflowPreset
+from runpod_video_automation.prompt_refiner.refinement import RefinementResult
 from runpod_video_automation.render_metadata import (
     build_shot_inputs,
     build_start_image_inputs,
@@ -55,6 +56,212 @@ def test_cli_parser_includes_scene_command() -> None:
     assert args.output is None
 
 
+def test_cli_parser_includes_prompt_refiner_commands() -> None:
+    refine_args = build_parser().parse_args(
+        ["refine", "scene.json", "--apply", "--force"]
+    )
+    chat_args = build_parser().parse_args(
+        ["chat", "--apply", "--no-browser", "--duration-seconds", "5"]
+    )
+    setup_args = build_parser().parse_args(["setup", "--apply", "--include-refiner"])
+    scene_args = build_parser().parse_args(
+        ["scene", "scene.json", "--apply", "--refine-prompts"]
+    )
+
+    assert refine_args.func is cli.refine
+    assert refine_args.force is True
+    assert chat_args.func is cli.chat
+    assert chat_args.duration_seconds == 5
+    assert setup_args.include_refiner is True
+    assert scene_args.refine_prompts is True
+
+
+def test_scene_refinement_cache_hit_does_not_start_pod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Cached",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {
+                        "name": "Opening",
+                        "prompt": "Walks",
+                        "generate_start_image": {"prompt": "Adult character"},
+                    }
+                ],
+            }
+        )
+    )
+    scene = cli.Scene.load(manifest)
+    result = RefinementResult(
+        scene=scene,
+        document=json.loads(manifest.read_text()),
+        manifest_path=tmp_path / "output/prompt-refinement/refined.json",
+        provenance={"cache_key": "cached"},
+        cache_hit=True,
+    )
+    rendered: list[RefinementResult | None] = []
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: object())
+    monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: result)
+    monkeypatch.setattr(
+        cli,
+        "_remote_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("A cache hit must not start a Pod")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_render_scene_effective",
+        lambda args, scene_path, effective_scene, **kwargs: rendered.append(
+            kwargs.get("refinement")
+        ),
+    )
+    args = build_parser().parse_args(
+        ["scene", str(manifest), "--plan", "--refine-prompts"]
+    )
+
+    cli.render_scene(args)
+
+    assert rendered == [result]
+
+
+def test_scene_refinement_reuses_same_remote_session_for_render(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Refined",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {
+                        "name": "Opening",
+                        "prompt": "Walks",
+                        "generate_start_image": {"prompt": "Adult character"},
+                    }
+                ],
+            }
+        )
+    )
+    scene = cli.Scene.load(manifest)
+    result = RefinementResult(
+        scene=scene,
+        document=json.loads(manifest.read_text()),
+        manifest_path=tmp_path / "output/prompt-refinement/refined.json",
+        provenance={"cache_key": "new"},
+        cache_hit=False,
+    )
+    artifact = ModelFile("https://example.test/model", "models/model.gguf", 1)
+
+    class RefinerProfile:
+        artifacts = (artifact,)
+
+    remote = object()
+    remote_details = (remote, "pod-1", 1.0, {})
+    events: list[object] = []
+
+    @contextmanager
+    def fake_remote_session(args, profile, *, models, prepare_comfy=True):
+        assert models == (artifact,)
+        assert prepare_comfy is False
+        events.append("remote-enter")
+        yield remote_details
+        events.append("remote-exit")
+
+    def fake_refine_with_remote(**kwargs):
+        assert kwargs["remote"] is remote
+        events.append("refine")
+        return result
+
+    def fake_render(*args, **kwargs):
+        assert kwargs["remote_details"] is remote_details
+        assert kwargs["refinement"] is result
+        events.append("render")
+
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: RefinerProfile())
+    monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: None)
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(cli, "_remote_session", fake_remote_session)
+    monkeypatch.setattr(cli, "_refine_with_remote", fake_refine_with_remote)
+    monkeypatch.setattr(cli, "_render_scene_effective", fake_render)
+    args = build_parser().parse_args(
+        ["scene", str(manifest), "--apply", "--refine-prompts"]
+    )
+
+    cli.render_scene(args)
+
+    assert events == ["remote-enter", "refine", "render", "remote-exit"]
+
+
+def test_scene_refinement_requires_restart_for_existing_pod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Existing Pod",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {
+                        "name": "Opening",
+                        "prompt": "Walks",
+                        "generate_start_image": {"prompt": "Adult character"},
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: object())
+    monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: None)
+    args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--apply",
+            "--refine-prompts",
+            "--pod-id",
+            "pod-1",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires --restart"):
+        cli.render_scene(args)
+
+
+def test_scene_rejects_refiner_options_without_opt_in(tmp_path: Path) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "No Refinement",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {
+                        "name": "Opening",
+                        "prompt": "Walks",
+                        "generate_start_image": {"prompt": "Adult character"},
+                    }
+                ],
+            }
+        )
+    )
+    args = build_parser().parse_args(
+        ["scene", str(manifest), "--plan", "--force"]
+    )
+
+    with pytest.raises(ValueError, match="require --refine-prompts"):
+        cli.render_scene(args)
+
+
 def test_setup_installs_selected_models_without_comfyui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -78,6 +285,31 @@ def test_setup_installs_selected_models_without_comfyui(
     args.func(args)
 
     assert installed == [(image_model,)]
+
+
+def test_setup_can_install_prompt_refiner_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ModelFile("https://example.test/runtime", "tools/runtime", 1)
+    model = ModelFile("https://example.test/model", "models/model.gguf", 2)
+    installed: list[tuple[ModelFile, ...]] = []
+
+    class RefinerProfile:
+        artifacts = (runtime, model)
+
+    @contextmanager
+    def fake_remote_session(args, profile, *, models):
+        installed.append(models)
+        yield object(), "pod-new", 1.0, {}
+
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: RefinerProfile())
+    monkeypatch.setattr(cli, "_remote_session", fake_remote_session)
+    args = build_parser().parse_args(["setup", "--apply", "--include-refiner"])
+
+    args.func(args)
+
+    assert installed == [(runtime, model)]
 
 
 def test_scene_project_directory_uses_local_output(tmp_path: Path) -> None:
@@ -440,6 +672,76 @@ def test_retry_operation_retries_after_cleanup(monkeypatch) -> None:
 
     assert result == "ok"
     assert events == ["run", "cleanup", "run"]
+
+
+def test_cleanup_all_does_not_parse_runpod_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminated: list[str] = []
+
+    class FakeRunPodClient:
+        def __init__(self, api_key: str) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def list_pods(self):
+            return [
+                {
+                    "id": "pod-1",
+                    "name": "runpod-video-test",
+                    "createdAt": "not-a-timestamp",
+                }
+            ]
+
+        def terminate_pod(self, pod_id: str) -> None:
+            terminated.append(pod_id)
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "key")
+    monkeypatch.setattr(cli, "RunPodClient", FakeRunPodClient)
+
+    cli.cleanup(Namespace(all=True, max_age_hours=2.0))
+
+    assert terminated == ["pod-1"]
+
+
+def test_cleanup_parses_runpod_utc_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminated: list[str] = []
+
+    class FakeRunPodClient:
+        def __init__(self, api_key: str) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def list_pods(self):
+            return [
+                {
+                    "id": "pod-old",
+                    "name": "runpod-video-test",
+                    "createdAt": "2000-01-01 00:00:00.000 +0000 UTC",
+                }
+            ]
+
+        def terminate_pod(self, pod_id: str) -> None:
+            terminated.append(pod_id)
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "key")
+    monkeypatch.setattr(cli, "RunPodClient", FakeRunPodClient)
+
+    cli.cleanup(Namespace(all=False, max_age_hours=2.0))
+
+    assert terminated == ["pod-old"]
 
 
 def test_schedule_idle_stop_launches_detached_watchdog(

@@ -150,3 +150,22 @@ def test_shot_metadata_detects_modified_output(tmp_path: Path) -> None:
     _, differences = validate_shot_metadata(metadata, inputs, output_root)
 
     assert any("outputs.video.sha256" in difference for difference in differences)
+
+
+def test_prompt_refinement_provenance_is_part_of_shot_inputs(tmp_path: Path) -> None:
+    scene, shot, profile = _scene()
+    provenance = {"cache_key": "refinement-1", "schema_version": 1}
+
+    inputs = build_shot_inputs(
+        scene,
+        shot,
+        index=1,
+        start_image=None,
+        profile=profile,
+        video_workflow=profile.select_workflow("video"),
+        video_workflow_sha256="a" * 64,
+        start_workflow_sha256=None,
+        prompt_refinement=provenance,
+    )
+
+    assert inputs["runtime"]["prompt_refinement"] == provenance
