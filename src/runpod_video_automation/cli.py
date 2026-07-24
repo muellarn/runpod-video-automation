@@ -536,6 +536,207 @@ def _prune_old_shot_videos(shot_dir: Path, keep: Path, suffix: str) -> None:
             path.unlink()
 
 
+def _single_existing_output(
+    directory: Path,
+    *,
+    prefix: str,
+    suffixes: set[str],
+    label: str,
+) -> Path | None:
+    if not directory.is_dir():
+        return None
+    matches = sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file()
+        and path.name.startswith(prefix)
+        and path.suffix.lower() in suffixes
+    )
+    if len(matches) > 1:
+        raise ValueError(
+            f"Cannot backfill {label}: found multiple matching files: "
+            f"{', '.join(str(path) for path in matches)}"
+        )
+    return matches[0] if matches else None
+
+
+def _backfill_scene_metadata(
+    *,
+    scene_path: Path,
+    scene: Scene,
+    shot_entries: list[tuple[int, Shot]],
+    output_root: Path,
+    profile: Profile,
+    video_selection: WorkflowSelection,
+    video_output_suffix: str,
+    start_selection: WorkflowSelection | None,
+    generations: dict[int, ResolvedStartImageGeneration],
+) -> None:
+    if not output_root.is_dir():
+        raise ValueError(f"Scene output directory not found: {output_root}")
+    video_workflow_sha256 = fingerprint(load_workflow(video_selection.path))
+    start_workflow_sha256: str | None = None
+    if start_selection is not None:
+        start_workflow_sha256 = fingerprint(load_workflow(start_selection.path))
+
+    input_snapshots: dict[tuple[int, str], Path] = {}
+    generated_images: dict[int, Path] = {}
+    start_image_plans: list[tuple[Path, dict[str, Any], Path]] = []
+    shot_plans: list[tuple[Path, dict[str, Any], Path, Path]] = []
+    runtime = {
+        "backfilled": True,
+        "provenance": "inferred_from_existing_outputs",
+        "historical_render_time_unknown": True,
+    }
+
+    # Validate the complete adoption set before writing any metadata sidecars.
+    for index, shot in shot_entries:
+        if shot.start_image is not None:
+            input_snapshots[(index, "start")] = _snapshot_input(
+                shot.start_image,
+                output_root,
+                index=index,
+                role="start",
+            )
+        if shot.end_image is not None:
+            input_snapshots[(index, "end")] = _snapshot_input(
+                shot.end_image,
+                output_root,
+                index=index,
+                role="end",
+            )
+        if shot.generate_start_image is None:
+            continue
+        if start_selection is None or start_workflow_sha256 is None:
+            raise RuntimeError("Start image workflow selection is unavailable")
+        inputs = build_start_image_inputs(
+            shot,
+            index=index,
+            profile=profile,
+            generation=generations[index],
+            start_workflow=start_selection,
+            start_workflow_sha256=start_workflow_sha256,
+        )
+        metadata_path = _start_image_metadata_path(output_root, index, shot.name)
+        if metadata_path.is_file():
+            existing_image, differences = validate_start_image_metadata(
+                read_metadata(metadata_path), inputs, output_root
+            )
+            if existing_image is None or differences:
+                raise ValueError(
+                    f"Cannot backfill shot {index}: existing start image metadata "
+                    "does not match the current scene:\n  - "
+                    + "\n  - ".join(differences)
+                )
+            generated_images[index] = existing_image
+            print(f"Metadata already exists: {metadata_path}")
+            continue
+        image = _single_existing_output(
+            output_root / "000-generated-start-image",
+            prefix=f"{index:03d}-{slugify(shot.name)}_",
+            suffixes=IMAGE_SUFFIXES,
+            label=f"generated start image for shot {index}",
+        )
+        if image is None:
+            continue
+        generated_images[index] = image
+        start_image_plans.append((metadata_path, inputs, image))
+
+    for index, shot in shot_entries:
+        shot_dir = _shot_dir(output_root, index, shot.name)
+        metadata_path = shot_dir / "metadata.json"
+        if metadata_path.is_file():
+            print(f"Metadata already exists: {metadata_path}")
+            continue
+        video = _single_existing_output(
+            shot_dir,
+            prefix="",
+            suffixes={video_output_suffix},
+            label=f"video for shot {index}",
+        )
+        continuation = _continuation_path(output_root, index, shot.name)
+        if video is None and not continuation.is_file():
+            print(f"Backfill: no existing output for shot {index}; skipping")
+            continue
+        if video is None:
+            raise ValueError(f"Cannot backfill shot {index}: video is missing")
+        if not continuation.is_file():
+            raise ValueError(
+                f"Cannot backfill shot {index}: continuation image is missing"
+            )
+        if shot.start_image is not None:
+            start_image = input_snapshots[(index, "start")]
+        elif shot.generate_start_image is not None:
+            start_image = generated_images.get(index)
+            if start_image is None:
+                raise ValueError(
+                    f"Cannot backfill shot {index}: generated start image is missing"
+                )
+        else:
+            previous_index = index - 1
+            previous_shot = scene.shots[previous_index - 1]
+            start_image = _continuation_path(
+                output_root, previous_index, previous_shot.name
+            )
+            if not start_image.is_file():
+                raise ValueError(
+                    f"Cannot backfill shot {index}: previous continuation is missing"
+                )
+        inputs = build_shot_inputs(
+            scene,
+            shot,
+            index=index,
+            start_image=start_image,
+            profile=profile,
+            video_workflow=video_selection,
+            video_workflow_sha256=video_workflow_sha256,
+            video_output_suffix=video_output_suffix,
+            start_workflow=start_selection,
+            start_workflow_sha256=start_workflow_sha256,
+            generation=generations.get(index),
+            starting_state=(scene.shots[index - 2].end_state if index > 1 else ""),
+            end_image=input_snapshots.get((index, "end")),
+        )
+        shot_plans.append((metadata_path, inputs, video, continuation))
+
+    _snapshot_scene(scene_path, output_root)
+    for metadata_path, inputs, image in start_image_plans:
+        write_start_image_metadata(
+            metadata_path,
+            inputs=inputs,
+            image=image,
+            output_root=output_root,
+            runtime=runtime,
+            elapsed_seconds=0,
+        )
+        print(f"Backfilled start image metadata: {metadata_path}")
+    for metadata_path, inputs, video, continuation in shot_plans:
+        write_shot_metadata(
+            metadata_path,
+            inputs=inputs,
+            video=video,
+            continuation=continuation,
+            output_root=output_root,
+            runtime=runtime,
+            elapsed_seconds=0,
+        )
+        print(f"Backfilled shot metadata: {metadata_path}")
+
+    final_video = output_root / f"{slugify(scene.title)}{video_output_suffix}"
+    write_render_manifest(
+        output_root,
+        scene_path,
+        scene,
+        selected_shots=[index for index, _ in shot_entries],
+        final_video=final_video if final_video.is_file() else None,
+        provenance="inferred_from_existing_outputs",
+    )
+    print(
+        f"Metadata backfill complete: {len(shot_plans)} shot(s), "
+        f"{len(start_image_plans)} start image(s)"
+    )
+
+
 def _selected_shot_entries(
     scene: Scene, args: argparse.Namespace
 ) -> list[tuple[int, Shot]]:
@@ -561,8 +762,11 @@ def render_scene(args: argparse.Namespace) -> None:
     shot_entries = _selected_shot_entries(scene, args)
     selected_numbers = {index for index, _ in shot_entries}
     all_shots_selected = len(selected_numbers) == len(scene.shots)
-    configured_start_images = any(
+    selected_start_images = any(
         shot.generate_start_image is not None for _, shot in shot_entries
+    )
+    scene_uses_start_images = any(
+        shot.generate_start_image is not None for shot in scene.shots
     )
     profile = Profile.load(_profile_path(args.profile))
     video_selection: WorkflowSelection | None = None
@@ -580,7 +784,7 @@ def render_scene(args: argparse.Namespace) -> None:
         ).output_suffix.lower()
     start_selection: WorkflowSelection | None = None
     generations: dict[int, ResolvedStartImageGeneration] = {}
-    if configured_start_images:
+    if scene_uses_start_images:
         start_selection = _workflow_selection(
             profile,
             "start_image",
@@ -598,6 +802,45 @@ def render_scene(args: argparse.Namespace) -> None:
     _scene_plan(scene, generations)
     if not all_shots_selected:
         print(f"Selected shots: {', '.join(map(str, sorted(selected_numbers)))}")
+    if getattr(args, "backfill_metadata", False):
+        conflicting = [
+            flag
+            for enabled, flag in (
+                (args.plan, "--plan"),
+                (args.apply, "--apply"),
+                (args.start_image_only, "--start-image-only"),
+                (getattr(args, "approve_start_images", False), "--approve-start-images"),
+                (getattr(args, "resume", False), "--resume"),
+                (getattr(args, "restart", False), "--restart"),
+                (bool(getattr(args, "pod_id", None)), "--pod-id"),
+                (getattr(args, "keep_pod", False), "--keep-pod"),
+                (getattr(args, "stop_pod", False), "--stop-pod"),
+                (
+                    getattr(args, "idle_stop_minutes", None) is not None,
+                    "--idle-stop-minutes",
+                ),
+            )
+            if enabled
+        ]
+        if conflicting:
+            raise ValueError(
+                "--backfill-metadata cannot be combined with "
+                + ", ".join(conflicting)
+            )
+        if video_selection is None:
+            raise RuntimeError("Video workflow selection is unavailable")
+        _backfill_scene_metadata(
+            scene_path=scene_path,
+            scene=scene,
+            shot_entries=shot_entries,
+            output_root=_scene_output_root(scene_path, args.output),
+            profile=profile,
+            video_selection=video_selection,
+            video_output_suffix=video_output_suffix,
+            start_selection=start_selection,
+            generations=generations,
+        )
+        return
     if args.plan:
         if args.apply:
             raise ValueError("Use either --plan or --apply, not both")
@@ -646,7 +889,7 @@ def render_scene(args: argparse.Namespace) -> None:
                 f"does not exist: {continuation}"
             )
 
-    if args.start_image_only and not configured_start_images:
+    if args.start_image_only and not selected_start_images:
         raise ValueError(
             "--start-image-only requires at least one generate_start_image shot"
         )
@@ -659,7 +902,7 @@ def render_scene(args: argparse.Namespace) -> None:
         video_workflow_sha256 = fingerprint(base_workflow)
     start_image_workflow: dict[str, Any] | None = None
     start_workflow_sha256: str | None = None
-    if configured_start_images:
+    if scene_uses_start_images:
         if start_selection is None:
             raise RuntimeError("Start image workflow selection is unavailable")
         start_image_workflow = load_workflow(start_selection.path)
@@ -740,6 +983,22 @@ def render_scene(args: argparse.Namespace) -> None:
             )
             metadata_path = _shot_dir(output_root, index, shot.name) / "metadata.json"
             metadata = read_metadata(metadata_path)
+            if shot.generate_start_image is None and metadata is not None:
+                saved_inputs = metadata.get("inputs")
+                saved_runtime = (
+                    saved_inputs.get("runtime")
+                    if isinstance(saved_inputs, dict)
+                    else None
+                )
+                expected_runtime = expected_inputs.get("runtime")
+                if isinstance(saved_runtime, dict) and isinstance(
+                    expected_runtime, dict
+                ):
+                    # Schema v2 initially made this irrelevant field depend on
+                    # whether a generated-image shot was selected in the same run.
+                    expected_runtime["start_image_workflow"] = saved_runtime.get(
+                        "start_image_workflow"
+                    )
             existing_video, differences = validate_shot_metadata(
                 metadata,
                 expected_inputs,
@@ -1202,6 +1461,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help="Reuse valid completed shots and generated start images",
+    )
+    scene_parser.add_argument(
+        "--backfill-metadata",
+        action="store_true",
+        help="Infer missing metadata from existing local outputs without using a Pod",
     )
     shot_selection = scene_parser.add_mutually_exclusive_group()
     shot_selection.add_argument(

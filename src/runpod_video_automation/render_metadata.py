@@ -355,6 +355,7 @@ def write_render_manifest(
     *,
     selected_shots: list[int],
     final_video: Path | None = None,
+    provenance: str | None = None,
 ) -> None:
     shots = []
     for index, shot in enumerate(scene.shots, start=1):
@@ -373,6 +374,7 @@ def write_render_manifest(
     value = {
         "schema_version": SCHEMA_VERSION,
         "updated_at": datetime.now(UTC).isoformat(),
+        "provenance": provenance,
         "scene": {
             "title": scene.title,
             "source": str(scene_path.resolve()),
@@ -393,6 +395,7 @@ def write_render_manifest(
             {
                 "path": str(final_video.relative_to(output_root)),
                 **(_asset(final_video) or {}),
+                "provenance": provenance,
             }
             if final_video is not None and final_video.is_file()
             else None

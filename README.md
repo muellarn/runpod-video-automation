@@ -216,6 +216,26 @@ A changed shot invalidates later shots that consume its continuation. A later
 shot with its own `start_image` or `generate_start_image` remains independent.
 Legacy outputs without metadata are treated as stale and rendered again.
 
+To adopt existing local outputs created before metadata tracking, backfill the
+missing sidecars without starting a Pod:
+
+```bash
+uv run runpod-video scene projects/my-scene --backfill-metadata
+```
+
+Backfill requires exactly one matching video and `continuation.png` per
+existing shot. It also adopts uniquely matching generated start images, skips
+shots without outputs, writes `render-manifest.json`, and marks provenance as
+`inferred_from_existing_outputs`. It never overwrites existing shot or
+start-image sidecars; after full validation it refreshes the scene snapshot and
+rebuildable render manifest. The historical render time and the relationship
+of an existing assembled video to the shots remain explicitly unverified. The
+command cannot be combined with `--apply` or Pod lifecycle options. Use it only
+when the current `scene.json`, workflow profile, and sampling settings
+accurately describe the historical render; those facts cannot be recovered
+from WebM files alone. A subsequent `--resume --apply` then reuses matching
+adopted shots and renders only missing or changed shots.
+
 Generate only the images configured by `generate_start_image`, without loading
 the Wan models, requiring FFmpeg, or rendering video shots:
 

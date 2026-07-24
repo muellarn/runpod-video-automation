@@ -108,6 +108,192 @@ def test_input_snapshot_is_content_addressed(tmp_path: Path) -> None:
     assert snapshot.read_bytes() == b"image"
 
 
+def test_metadata_backfill_reuses_existing_outputs_with_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Backfill Scene",
+                "global_prompt": "Same fictional adult character",
+                "shots": [
+                    {
+                        "name": "Opening",
+                        "prompt": "Walks forward",
+                        "generate_start_image": {
+                            "prompt": "Adult character standing in a room"
+                        },
+                    },
+                    {"name": "Follow Up", "prompt": "Turns around"},
+                ],
+            }
+        )
+    )
+    output_root = tmp_path / "output"
+    generated = output_root / "000-generated-start-image/001-opening_00001_.png"
+    generated.parent.mkdir(parents=True)
+    generated.write_bytes(b"start")
+    for index, name in ((1, "opening"), (2, "follow-up")):
+        shot_dir = output_root / f"{index:03d}-{name}"
+        shot_dir.mkdir()
+        (shot_dir / f"{index:03d}-{name}_00001_.webm").write_bytes(b"video")
+        (shot_dir / "continuation.png").write_bytes(f"frame-{index}".encode())
+
+    profile = _profile()
+    workflow = {"1": {"class_type": "Test", "inputs": {}}}
+    monkeypatch.setattr(cli.Profile, "load", lambda path: profile)
+    monkeypatch.setattr(cli, "load_workflow", lambda path: workflow)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        cli,
+        "_worker_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Metadata backfill and matching resume must not start a Pod")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "concatenate_webm",
+        lambda videos, destination: destination.write_bytes(b"assembled"),
+    )
+    backfill_args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--backfill-metadata",
+            "--output",
+            str(output_root),
+        ]
+    )
+
+    cli.render_scene(backfill_args)
+
+    start_metadata = output_root / "000-generated-start-image/001-opening.metadata.json"
+    first_metadata = output_root / "001-opening/metadata.json"
+    second_metadata = output_root / "002-follow-up/metadata.json"
+    assert start_metadata.is_file()
+    assert first_metadata.is_file()
+    assert second_metadata.is_file()
+    assert json.loads(first_metadata.read_text())["render"]["backfilled"] is True
+
+    legacy_partial = json.loads(second_metadata.read_text())
+    legacy_partial["inputs"]["runtime"]["start_image_workflow"] = None
+    legacy_partial["fingerprint"] = fingerprint(legacy_partial["inputs"])
+    second_metadata.write_text(json.dumps(legacy_partial))
+
+    selected_resume_args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--apply",
+            "--resume",
+            "--shot",
+            "2",
+            "--output",
+            str(output_root),
+        ]
+    )
+    cli.render_scene(selected_resume_args)
+
+    resume_args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--apply",
+            "--resume",
+            "--output",
+            str(output_root),
+        ]
+    )
+    cli.render_scene(resume_args)
+
+    assert (output_root / "backfill-scene.webm").is_file()
+
+
+def test_metadata_backfill_rejects_ambiguous_video_files(tmp_path: Path) -> None:
+    shot_dir = tmp_path / "001-shot"
+    shot_dir.mkdir()
+    (shot_dir / "one.webm").write_bytes(b"one")
+    (shot_dir / "two.webm").write_bytes(b"two")
+
+    with pytest.raises(ValueError, match="multiple matching files"):
+        cli._single_existing_output(
+            shot_dir,
+            prefix="",
+            suffixes={".webm"},
+            label="video for shot 1",
+        )
+
+
+def test_metadata_backfill_generated_image_prefix_requires_delimiter(
+    tmp_path: Path,
+) -> None:
+    generated_dir = tmp_path / "generated"
+    generated_dir.mkdir()
+    (generated_dir / "001-opening_00001_.png").write_bytes(b"wrong")
+
+    result = cli._single_existing_output(
+        generated_dir,
+        prefix="001-open_",
+        suffixes={".png"},
+        label="generated start image",
+    )
+
+    assert result is None
+
+
+def test_metadata_backfill_validates_all_shots_before_writing_sidecars(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"start")
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Incomplete",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {"name": "One", "prompt": "A", "start_image": "start.png"},
+                    {"name": "Two", "prompt": "B"},
+                ],
+            }
+        )
+    )
+    output_root = tmp_path / "output"
+    first = output_root / "001-one"
+    second = output_root / "002-two"
+    first.mkdir(parents=True)
+    second.mkdir()
+    (first / "one.webm").write_bytes(b"one")
+    (first / "continuation.png").write_bytes(b"frame")
+    (second / "two.webm").write_bytes(b"two")
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(
+        cli,
+        "load_workflow",
+        lambda path: {"1": {"class_type": "Test", "inputs": {}}},
+    )
+    args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--backfill-metadata",
+            "--output",
+            str(output_root),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="continuation image is missing"):
+        cli.render_scene(args)
+
+    assert not (first / "metadata.json").exists()
+    assert not (output_root / "scene.snapshot.json").exists()
+
+
 def test_scene_parser_accepts_existing_pod_restart() -> None:
     args = build_parser().parse_args(
         ["scene", "scene.json", "--apply", "--pod-id", "pod-1", "--restart"]
