@@ -112,6 +112,25 @@ changed prompt, workflow, model, sampler setting, or reference content makes the
 affected image stale. If every selected output is current, resume completes
 locally without provisioning or connecting to a Pod.
 
+Scenes whose later shots inherit video continuations cannot use
+`--generated-images-only` before those videos exist. Use
+`--preview-generated-images` to inspect the complete generated-image sequence
+without rendering Wan videos. Preview mode substitutes each missing inherited
+continuation with the previous generated end image and writes everything below
+`output/000-image-preview/`. These isolated previews do not alter normal image
+metadata and cannot be approved as render inputs.
+
+Preview artifacts are grouped by shot for direct start/end comparison:
+
+```text
+000-image-preview/
+  001-opening/
+    start.png
+    start.metadata.json
+    end.png
+    end.metadata.json
+```
+
 The older `--start-image-only` and `--approve-start-images` flags remain useful
 for scenes that generate only start frames. They do not approve generated end
 frames.

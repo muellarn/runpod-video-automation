@@ -149,9 +149,228 @@ def test_parser_accepts_generic_generated_image_flags() -> None:
     approved = build_parser().parse_args(
         ["scene", "scene.json", "--apply", "--approve-generated-images"]
     )
+    preview = build_parser().parse_args(
+        ["scene", "scene.json", "--apply", "--preview-generated-images"]
+    )
 
     assert generated.generated_images_only is True
     assert approved.approve_generated_images is True
+    assert preview.preview_generated_images is True
+
+
+def test_preview_images_use_prior_generated_end_in_isolated_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = _write_scene(
+        tmp_path,
+        [
+            {
+                "name": "Opening",
+                "prompt": "Sits",
+                "generate_start_image": {"prompt": "Adult character standing"},
+                "generate_end_image": _qwen_end([{"source": "current_start"}]),
+            },
+            {
+                "name": "Follow Up",
+                "prompt": "Turns",
+                "generate_end_image": _qwen_end([{"source": "current_start"}]),
+            },
+        ],
+    )
+    clients: list[_FakeComfy] = []
+    models: list[tuple[ModelFile, ...]] = []
+    _install_fakes(monkeypatch, clients, models)
+    monkeypatch.setattr(
+        cli,
+        "extract_last_frame",
+        lambda *_: (_ for _ in ()).throw(AssertionError("video frame extracted")),
+    )
+    output = tmp_path / "out"
+
+    cli.render_scene(
+        build_parser().parse_args(
+            [
+                "scene",
+                str(manifest),
+                "--apply",
+                "--preview-generated-images",
+                "--shot",
+                "2",
+                "--output",
+                str(output),
+            ]
+        )
+    )
+
+    preview = output / "000-image-preview"
+    assert [workflow["kind"] for workflow in clients[0].queued] == [
+        "image",
+        "image",
+        "image",
+    ]
+    assert models == [(START_MODEL, QWEN_MODEL)]
+    assert WAN_MODEL not in models[0]
+    opening = preview / "001-opening"
+    follow_up = preview / "002-follow-up"
+    assert (opening / "start.png").is_file()
+    assert (opening / "start.metadata.json").is_file()
+    assert (opening / "end.png").is_file()
+    assert (opening / "end.metadata.json").is_file()
+    assert (follow_up / "end.png").is_file()
+    assert (follow_up / "end.metadata.json").is_file()
+    assert clients[0].uploads[-1][0] == opening / "end.png"
+    assert (preview / "render-manifest.json").is_file()
+    render_manifest = json.loads((preview / "render-manifest.json").read_text())
+    assert render_manifest["end_images"][0]["output"]["path"] == (
+        "001-opening/end.png"
+    )
+    assert not (preview / "000-generated-start-image").exists()
+    assert not (preview / "000-generated-end-image").exists()
+    assert not (output / "000-generated-start-image").exists()
+    assert not (output / "000-generated-end-image").exists()
+
+    monkeypatch.setattr(
+        cli,
+        "_worker_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("matching preview resume must not start a worker")
+        ),
+    )
+    cli.render_scene(
+        build_parser().parse_args(
+            [
+                "scene",
+                str(manifest),
+                "--apply",
+                "--preview-generated-images",
+                "--resume",
+                "--shot",
+                "2",
+                "--output",
+                str(output),
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not match the current scene"):
+        cli.render_scene(
+            build_parser().parse_args(
+                [
+                    "scene",
+                    str(manifest),
+                    "--apply",
+                    "--approve-generated-images",
+                    "--shot",
+                    "1",
+                    "--output",
+                    str(preview),
+                ]
+            )
+        )
+
+
+def test_preview_regeneration_prunes_old_shot_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = _write_scene(
+        tmp_path,
+        [
+            {
+                "name": "Opening",
+                "prompt": "Sits",
+                "generate_start_image": {"prompt": "Adult character standing"},
+                "generate_end_image": _qwen_end([{"source": "current_start"}]),
+            }
+        ],
+    )
+    clients: list[_FakeComfy] = []
+    models: list[tuple[ModelFile, ...]] = []
+    _install_fakes(monkeypatch, clients, models)
+    output = tmp_path / "out"
+    command = [
+        "scene",
+        str(manifest),
+        "--apply",
+        "--preview-generated-images",
+        "--output",
+        str(output),
+    ]
+    cli.render_scene(build_parser().parse_args(command))
+    preview = output / "000-image-preview"
+    assert (preview / "001-opening" / "start.png").is_file()
+    assert (preview / "001-opening" / "end.png").is_file()
+
+    changed = json.loads(manifest.read_text())
+    changed["shots"][0]["name"] = "Renamed"
+    manifest.write_text(json.dumps(changed))
+    cli.render_scene(build_parser().parse_args(command))
+
+    assert not (preview / "001-opening").exists()
+    assert (preview / "001-renamed" / "start.png").is_file()
+    assert (preview / "001-renamed" / "start.metadata.json").is_file()
+    assert (preview / "001-renamed" / "end.png").is_file()
+    assert (preview / "001-renamed" / "end.metadata.json").is_file()
+
+
+def test_preview_uses_generated_end_for_shot_continuation_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = _write_scene(
+        tmp_path,
+        [
+            {
+                "name": "Opening",
+                "prompt": "Sits",
+                "generate_start_image": {"prompt": "Adult character standing"},
+                "generate_end_image": _qwen_end([{"source": "current_start"}]),
+            },
+            {
+                "name": "POV Reset",
+                "prompt": "Looks up",
+                "generate_start_image": {
+                    "workflow": "qwen",
+                    "adapter": "qwen_image_edit_2511",
+                    "prompt": "Change the camera",
+                    "reference_images": [
+                        {"source": "shot_continuation", "shot": 1}
+                    ],
+                },
+                "generate_end_image": _qwen_end([{"source": "current_start"}]),
+            },
+        ],
+    )
+    clients: list[_FakeComfy] = []
+    models: list[tuple[ModelFile, ...]] = []
+    _install_fakes(monkeypatch, clients, models)
+    output = tmp_path / "out"
+
+    cli.render_scene(
+        build_parser().parse_args(
+            [
+                "scene",
+                str(manifest),
+                "--apply",
+                "--preview-generated-images",
+                "--shot",
+                "2",
+                "--output",
+                str(output),
+            ]
+        )
+    )
+
+    preview = output / "000-image-preview"
+    assert [
+        (workflow["shot_number"], workflow["role"])
+        for workflow in clients[0].queued
+    ] == [(1, "start"), (1, "end"), (2, "start"), (2, "end")]
+    assert any(
+        path == preview / "001-opening" / "end.png"
+        and "002-start-reference-001" in remote_name
+        for path, remote_name in clients[0].uploads
+    )
+    assert (preview / "002-pov-reset" / "start.png").is_file()
+    assert (preview / "002-pov-reset" / "end.png").is_file()
 
 
 def test_qwen_generated_end_uses_exact_reference_order_and_feeds_wan(
