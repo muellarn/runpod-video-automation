@@ -12,7 +12,6 @@
     {
       "name": "Standing Before Bed",
       "generate_start_image": {
-        "model_type": "z_image_turbo",
         "prompt": "A wide, loosely framed, uncropped head-to-toe environmental photograph of one fictional adult woman, age 28, standing centered in front of a neatly made bed. Her entire head and all of her blonde hair are fully visible, with generous empty wall above her head. Both bare feet and ample floor below them are visible. She occupies no more than 70 percent of the image height. The camera is pulled back six metres at chest height with a normal 50 mm perspective; this is a distant full-body shot, never a close portrait or cropped body shot. She faces the camera with both arms relaxed and both hands visible. She has a slender adult body and wears a matte black bra and matching black briefs. Cozy ordinary bedroom, neutral bedding, green houseplants, warm practical light, realistic natural skin, vertical composition.",
         "checkpoint": "cyberrealisticZImage_v50.safetensors",
         "width": 864,

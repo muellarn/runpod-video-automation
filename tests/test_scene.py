@@ -3,10 +3,13 @@ from pathlib import Path
 
 import pytest
 
+from runpod_video_automation.adapters import (
+    build_shot_workflow,
+    build_start_image_workflow,
+    resolve_start_image_generation,
+)
 from runpod_video_automation.scene import (
     Scene,
-    build_start_image_workflow,
-    build_shot_workflow,
     concatenate_webm,
     duration_to_frames,
     extract_last_frame,
@@ -84,7 +87,7 @@ def test_scene_supports_generated_first_start_image(tmp_path: Path) -> None:
                 "name": "Opening",
                 "prompt": "Sits on the bed",
                 "generate_start_image": {
-                    "model_type": "z_image_turbo",
+                    "adapter": "z_image_turbo",
                     "prompt": "Adult woman standing in a bedroom",
                     "width": 864,
                     "height": 1200,
@@ -99,12 +102,12 @@ def test_scene_supports_generated_first_start_image(tmp_path: Path) -> None:
     generation = scene.shots[0].generate_start_image
     assert generation is not None
     assert generation.prompt == "Adult woman standing in a bedroom"
-    assert generation.model_type == "z_image_turbo"
-    assert generation.checkpoint == "cyberrealisticZImage_v50.safetensors"
+    assert generation.adapter == "z_image_turbo"
+    assert generation.checkpoint is None
     assert generation.width == 864
     assert generation.height == 1200
-    assert generation.steps == 8
-    assert generation.cfg == 1.0
+    assert generation.steps is None
+    assert generation.cfg is None
 
 
 def test_scene_rejects_file_and_generated_start_image(tmp_path: Path) -> None:
@@ -126,6 +129,25 @@ def test_scene_rejects_file_and_generated_start_image(tmp_path: Path) -> None:
         Scene.load(path)
 
 
+def test_scene_rejects_legacy_start_image_model_type(tmp_path: Path) -> None:
+    path = _write_scene(
+        tmp_path,
+        [
+            {
+                "name": "Opening",
+                "prompt": "Sits on the bed",
+                "generate_start_image": {
+                    "model_type": "sdxl",
+                    "prompt": "Adult woman in a bedroom",
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="replaced by 'adapter'"):
+        Scene.load(path)
+
+
 def test_build_start_image_workflow_applies_generation_settings(
     tmp_path: Path,
 ) -> None:
@@ -137,7 +159,7 @@ def test_build_start_image_workflow_applies_generation_settings(
                     "name": "Opening Portrait",
                     "prompt": "Sits on the bed",
                     "generate_start_image": {
-                        "model_type": "z_image_turbo",
+                        "adapter": "z_image_turbo",
                         "prompt": "Adult woman standing in a bedroom",
                         "checkpoint": "cyberrealisticZImage_v50.safetensors",
                         "width": 864,
@@ -152,12 +174,14 @@ def test_build_start_image_workflow_applies_generation_settings(
     )
     generation = scene.shots[0].generate_start_image
     assert generation is not None
+    resolved = resolve_start_image_generation(generation, "z_image_turbo")
     root = Path(__file__).resolve().parents[1]
     base = load_workflow(root / "workflows/z-image-turbo-start-image-api.json")
 
     workflow = build_start_image_workflow(
+        "z_image_turbo",
         base,
-        generation,
+        resolved,
         shot_number=1,
         shot_name=scene.shots[0].name,
     )
@@ -188,7 +212,7 @@ def test_scene_rejects_negative_prompt_for_z_image(tmp_path: Path) -> None:
                 "name": "Opening",
                 "prompt": "Sits on the bed",
                 "generate_start_image": {
-                    "model_type": "z_image_turbo",
+                    "adapter": "z_image_turbo",
                     "prompt": "Adult woman standing in a bedroom",
                     "negative_prompt": "blurry",
                 },
@@ -196,8 +220,31 @@ def test_scene_rejects_negative_prompt_for_z_image(tmp_path: Path) -> None:
         ],
     )
 
+    scene = Scene.load(path)
+    generation = scene.shots[0].generate_start_image
+    assert generation is not None
     with pytest.raises(ValueError, match="does not support negative prompting"):
-        Scene.load(path)
+        resolve_start_image_generation(generation, "z_image_turbo")
+
+
+def test_start_image_adapter_rejects_null_profile_default(tmp_path: Path) -> None:
+    path = _write_scene(
+        tmp_path,
+        [
+            {
+                "name": "Opening",
+                "prompt": "Sits on the bed",
+                "generate_start_image": {"prompt": "Adult woman in a bedroom"},
+            }
+        ],
+    )
+    generation = Scene.load(path).shots[0].generate_start_image
+    assert generation is not None
+
+    with pytest.raises(ValueError, match="checkpoint must be a non-empty string"):
+        resolve_start_image_generation(
+            generation, "z_image_turbo", {"checkpoint": None}
+        )
 
 
 def test_build_shot_workflow_applies_scene_direction(tmp_path: Path) -> None:
@@ -227,6 +274,7 @@ def test_build_shot_workflow_applies_scene_direction(tmp_path: Path) -> None:
     base = load_workflow(root / "workflows/wan22-i2v-14b-api.json")
 
     workflow = build_shot_workflow(
+        "wan22_i2v",
         base,
         scene,
         scene.shots[0],
@@ -274,6 +322,7 @@ def test_previous_end_state_is_labeled_in_next_shot_prompt(tmp_path: Path) -> No
     base = load_workflow(root / "workflows/wan22-i2v-14b-api.json")
 
     workflow = build_shot_workflow(
+        "wan22_i2v",
         base,
         scene,
         scene.shots[1],

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from runpod_video_automation.config import ModelFile, Profile
+from runpod_video_automation.config import ModelFile, Profile, WorkflowPreset
 from runpod_video_automation.render_metadata import (
     build_shot_inputs,
     read_metadata,
@@ -47,8 +47,16 @@ def _scene(prompt: str = "Walks forward") -> tuple[Scene, Shot, Profile]:
         min_vcpu_per_gpu=1,
         container_disk_gb=1,
         max_hourly_cost=1,
-        models=(ModelFile("https://example.test/model", "models/unet/model", 1),),
-        start_image_models=(),
+        model_groups={
+            "video": (
+                ModelFile("https://example.test/model", "models/unet/model", 1),
+            )
+        },
+        workflows={
+            "video": WorkflowPreset(
+                Path("video.json"), "wan22_i2v", ("video",)
+            )
+        },
     )
     return scene, shot, profile
 
@@ -69,9 +77,11 @@ def test_shot_metadata_round_trip_and_detects_input_change(tmp_path: Path) -> No
         index=1,
         start_image=start_image,
         profile=profile,
+        video_workflow=profile.select_workflow("video"),
         video_workflow_sha256="a" * 64,
         start_workflow_sha256=None,
     )
+    assert inputs["runtime"]["video_workflow"]["output_suffix"] == ".webm"
     metadata_path = video.parent / "metadata.json"
     write_shot_metadata(
         metadata_path,
@@ -97,6 +107,7 @@ def test_shot_metadata_round_trip_and_detects_input_change(tmp_path: Path) -> No
         index=1,
         start_image=start_image,
         profile=profile,
+        video_workflow=profile.select_workflow("video"),
         video_workflow_sha256="a" * 64,
         start_workflow_sha256=None,
     )
@@ -118,6 +129,7 @@ def test_shot_metadata_detects_modified_output(tmp_path: Path) -> None:
         index=1,
         start_image=None,
         profile=profile,
+        video_workflow=profile.select_workflow("video"),
         video_workflow_sha256="a" * 64,
         start_workflow_sha256=None,
     )

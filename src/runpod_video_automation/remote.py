@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from runpod_video_automation.config import ModelFile
+from runpod_video_automation.config import ModelFile, ModelPathAlias
 
 
 class RemoteWorker:
@@ -57,31 +57,32 @@ class RemoteWorker:
     def run(self, command: str, *, timeout: int | None = None) -> None:
         subprocess.run([*self._ssh_base, command], check=True, timeout=timeout)
 
-    def ensure_models(self, models: tuple[ModelFile, ...]) -> None:
+    def ensure_models(
+        self,
+        models: tuple[ModelFile, ...],
+        aliases: tuple[ModelPathAlias, ...] = (),
+    ) -> None:
         if not models:
             return
-        worker_directory_aliases = {
-            "models/diffusion_models": "models/unet",
-            "models/text_encoders": "models/clip",
-        }
         directories = sorted({str(Path(model.path).parent) for model in models})
         mkdir_args = " ".join(
             shlex.quote(f"/runpod-volume/{directory}") for directory in directories
         )
         self.run(f"mkdir -p {mkdir_args}")
         downloads: list[str] = []
-        model_aliases: list[tuple[str, str]] = []
+        model_aliases: dict[str, str] = {}
         for index, model in enumerate(models, start=1):
             destination = f"/runpod-volume/{model.path}"
-            if alias_directory := worker_directory_aliases.get(
-                str(Path(model.path).parent)
-            ):
-                model_aliases.append(
-                    (
-                        destination,
-                        f"/runpod-volume/{alias_directory}/{Path(model.path).name}",
-                    )
-                )
+            for alias in aliases:
+                try:
+                    relative = Path(model.path).relative_to(alias.source)
+                except ValueError:
+                    continue
+                alias_path = f"/runpod-volume/{Path(alias.target) / relative}"
+                existing = model_aliases.get(alias_path)
+                if existing is not None and existing != destination:
+                    raise ValueError(f"Model path alias collision at {alias_path}")
+                model_aliases[alias_path] = destination
             partial = f"{destination}.part"
             print(f"[{index}/{len(models)}] Ensuring {model.path}")
             destination_size_check = (
@@ -151,15 +152,15 @@ class RemoteWorker:
         )
         if model_aliases:
             alias_directories = " ".join(
-                shlex.quote(str(Path(alias).parent)) for _, alias in model_aliases
+                shlex.quote(str(Path(alias).parent)) for alias in model_aliases
             )
             alias_commands = " && ".join(
                 f"ln -sfn {shlex.quote(source)} {shlex.quote(alias)}"
-                for source, alias in model_aliases
+                for alias, source in model_aliases.items()
             )
             command_parts.append(
                 f'if test "$status" -eq 0; then mkdir -p {alias_directories} '
-                f"&& {alias_commands}; fi"
+                f"&& {alias_commands} || status=1; fi"
             )
         command_parts.append('exit "$status"')
         self.run("; ".join(command_parts), timeout=4 * 60 * 60)

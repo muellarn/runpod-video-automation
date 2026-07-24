@@ -13,8 +13,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
+from runpod_video_automation.adapters import (
+    ResolvedStartImageGeneration,
+    build_shot_workflow,
+    build_start_image_workflow,
+    get_video_adapter,
+    resolve_start_image_generation,
+)
 from runpod_video_automation.comfy_client import ComfyClient
-from runpod_video_automation.config import ModelFile, Profile
+from runpod_video_automation.config import ModelFile, Profile, WorkflowSelection
 from runpod_video_automation.remote import RemoteWorker
 from runpod_video_automation.render_metadata import (
     build_shot_inputs,
@@ -32,8 +39,6 @@ from runpod_video_automation.runpod_client import RunPodClient
 from runpod_video_automation.scene import (
     Scene,
     Shot,
-    build_start_image_workflow,
-    build_shot_workflow,
     concatenate_webm,
     extract_last_frame,
     slugify,
@@ -63,6 +68,29 @@ def _scene_path(value: str) -> Path:
 
 def _scene_output_root(scene_path: Path, output: str | None) -> Path:
     return Path(output) if output else scene_path.parent / "output"
+
+
+def _project_path(value: str | None) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+def _workflow_selection(
+    profile: Profile,
+    name: str,
+    *,
+    path: str | None,
+    adapter: str | None,
+    model_groups: list[str] | None,
+) -> WorkflowSelection:
+    return profile.select_workflow(
+        name,
+        path=_project_path(path),
+        adapter=adapter,
+        model_groups=tuple(model_groups) if model_groups is not None else None,
+    )
 
 
 def _api_key() -> str:
@@ -108,13 +136,18 @@ def inventory(args: argparse.Namespace) -> None:
 
 def plan(args: argparse.Namespace) -> None:
     profile = Profile.load(_profile_path(args.profile))
-    model_count = len(profile.models)
     print(f"Profile: {profile.name}")
     print(f"Image: {profile.image}")
     print(f"Data center: {profile.data_center_id}")
     print(f"Persistent volume: {profile.volume_name} ({profile.volume_size_gb} GB)")
     print(f"GPU fallback order: {', '.join(profile.gpu_type_ids)}")
-    print(f"Model files: {model_count}")
+    for name, models in profile.model_groups.items():
+        print(f"Model group {name}: {len(models)} file(s)")
+    for name, workflow in profile.workflows.items():
+        print(
+            f"Workflow {name}: {workflow.path} via {workflow.adapter} "
+            f"[{', '.join(workflow.model_groups)}]"
+        )
     print("Lifecycle: create/reuse volume -> create pod -> SSH -> models -> workflow -> download -> terminate")
 
 
@@ -155,7 +188,7 @@ def _parse_shots(value: str) -> tuple[int, ...]:
 
 
 def _validate_execution_args(args: argparse.Namespace) -> None:
-    if args.restart and not args.pod_id:
+    if getattr(args, "restart", False) and not args.pod_id:
         raise ValueError("--restart requires --pod-id")
     if getattr(args, "retries", 2) < 0:
         raise ValueError("--retries cannot be negative")
@@ -245,12 +278,12 @@ def _schedule_idle_stop(
 
 
 @contextmanager
-def _worker_session(
+def _remote_session(
     args: argparse.Namespace,
     profile: Profile,
     *,
-    models: tuple[ModelFile, ...] | None = None,
-) -> Iterator[ComfyClient]:
+    models: tuple[ModelFile, ...],
+) -> Iterator[tuple[RemoteWorker, str, float | None, dict[str, Any]]]:
     ssh_key = _ssh_key(args.ssh_key)
     requested_pod_id: str | None = args.pod_id
     pod_id: str | None = requested_pod_id
@@ -304,29 +337,8 @@ def _worker_session(
                 host=str(pod["publicIp"]), port=ssh_port, ssh_key=ssh_key
             )
             remote.wait_for_ssh()
-            remote.ensure_models(models if models is not None else profile.models)
-            with remote.comfy_tunnel() as base_url:
-                comfy = ComfyClient(base_url)
-                try:
-                    stats = comfy.wait_until_ready()
-                    devices = stats.get("devices", [])
-                    if devices:
-                        print(f"ComfyUI device: {devices[0].get('name', 'unknown')}")
-                    comfy.runtime_metadata = {
-                        "pod_id": pod_id,
-                        "gpu": (
-                            devices[0].get("name", "unknown")
-                            if devices
-                            else (pod.get("gpu") or {}).get("displayName", "unknown")
-                        ),
-                        "cost_per_hour": hourly_cost,
-                    }
-                    if args.restart:
-                        print("Interrupting active ComfyUI execution and clearing queue")
-                        comfy.interrupt_and_clear()
-                    yield comfy
-                finally:
-                    comfy.close()
+            remote.ensure_models(models, profile.model_path_aliases)
+            yield remote, pod_id, hourly_cost, pod
         finally:
             if pod_id and args.stop_pod:
                 print(f"Stopping pod {pod_id}")
@@ -339,14 +351,73 @@ def _worker_session(
                 _schedule_idle_stop(pod_id, ssh_key, args)
 
 
+@contextmanager
+def _worker_session(
+    args: argparse.Namespace,
+    profile: Profile,
+    *,
+    models: tuple[ModelFile, ...] | None = None,
+) -> Iterator[ComfyClient]:
+    selected_models = (
+        models
+        if models is not None
+        else profile.models_for_groups(profile.default_model_groups)
+    )
+    with _remote_session(args, profile, models=selected_models) as remote_details:
+        remote, pod_id, hourly_cost, pod = remote_details
+        with remote.comfy_tunnel() as base_url:
+            comfy = ComfyClient(base_url)
+            try:
+                stats = comfy.wait_until_ready()
+                devices = stats.get("devices", [])
+                if devices:
+                    print(f"ComfyUI device: {devices[0].get('name', 'unknown')}")
+                comfy.runtime_metadata = {
+                    "pod_id": pod_id,
+                    "gpu": (
+                        devices[0].get("name", "unknown")
+                        if devices
+                        else (pod.get("gpu") or {}).get("displayName", "unknown")
+                    ),
+                    "cost_per_hour": hourly_cost,
+                }
+                if getattr(args, "restart", False):
+                    print("Interrupting active ComfyUI execution and clearing queue")
+                    comfy.interrupt_and_clear()
+                yield comfy
+            finally:
+                comfy.close()
+
+
+def setup(args: argparse.Namespace) -> None:
+    if not args.apply:
+        raise RuntimeError("Refusing to create billable resources without --apply")
+    _validate_execution_args(args)
+    profile = Profile.load(_profile_path(args.profile))
+    groups = tuple(args.model_group or profile.default_model_groups)
+    models = profile.models_for_groups(groups)
+    print(f"Model groups: {', '.join(groups) if groups else '(none)'}")
+    print(f"Model files: {len(models)}")
+    with _remote_session(args, profile, models=models):
+        print("Model setup complete")
+
+
 def run(args: argparse.Namespace) -> None:
     if not args.apply:
         raise RuntimeError("Refusing to create billable resources without --apply")
     _validate_execution_args(args)
     profile = Profile.load(_profile_path(args.profile))
-    workflow = load_workflow(Path(args.workflow))
+    default_groups = (
+        profile.workflows["video"].model_groups
+        if "video" in profile.workflows
+        else profile.default_model_groups
+    )
+    groups = tuple(args.model_group or default_groups)
+    models = profile.models_for_groups(groups)
+    workflow_path = Path(args.workflow).expanduser().resolve()
+    workflow = load_workflow(workflow_path)
     apply_overrides(workflow, args.set or [])
-    with _worker_session(args, profile) as comfy:
+    with _worker_session(args, profile, models=models) as comfy:
         for image_arg in args.image or []:
             local_path, remote_name = _parse_image(image_arg)
             uploaded_name = _retry_operation(
@@ -372,7 +443,10 @@ def run(args: argparse.Namespace) -> None:
             print(f"Downloaded: {output}")
 
 
-def _scene_plan(scene: Scene) -> None:
+def _scene_plan(
+    scene: Scene,
+    generations: dict[int, ResolvedStartImageGeneration],
+) -> None:
     print(f"Scene: {scene.title}")
     print(f"Format: {scene.width}x{scene.height} at {scene.fps:g} FPS")
     print(f"Sampling: {scene.steps} steps, transition at {scene.transition_step}")
@@ -383,12 +457,14 @@ def _scene_plan(scene: Scene) -> None:
         if shot.start_image:
             source = str(shot.start_image)
         elif shot.generate_start_image:
-            source = (
-                f"generated with {shot.generate_start_image.model_type} "
-                f"({shot.generate_start_image.checkpoint}) "
-                f"at {shot.generate_start_image.width}x"
-                f"{shot.generate_start_image.height}"
-            )
+            generation = generations.get(index)
+            if generation is None:
+                source = "generated start image (unselected shot)"
+            else:
+                source = (
+                    f"generated with {generation.adapter} ({generation.checkpoint}) "
+                    f"at {generation.width}x{generation.height}"
+                )
         else:
             source = "previous shot's last frame"
         end = f", end keyframe {shot.end_image}" if shot.end_image else ""
@@ -454,8 +530,8 @@ def _print_resume_differences(index: int, differences: list[str]) -> None:
         print(f"  - {difference}")
 
 
-def _prune_old_shot_videos(shot_dir: Path, keep: Path) -> None:
-    for path in shot_dir.glob("*.webm"):
+def _prune_old_shot_videos(shot_dir: Path, keep: Path, suffix: str) -> None:
+    for path in shot_dir.glob(f"*{suffix}"):
         if path != keep:
             path.unlink()
 
@@ -468,7 +544,9 @@ def _selected_shot_entries(
     selected = shot_numbers or ((shot_number,) if shot_number is not None else None)
     if selected is None:
         return list(enumerate(scene.shots, start=1))
-    invalid = [number for number in selected if number > len(scene.shots)]
+    invalid = [
+        number for number in selected if number < 1 or number > len(scene.shots)
+    ]
     if invalid:
         raise ValueError(
             f"Selected shots must be between 1 and {len(scene.shots)}, got "
@@ -483,7 +561,41 @@ def render_scene(args: argparse.Namespace) -> None:
     shot_entries = _selected_shot_entries(scene, args)
     selected_numbers = {index for index, _ in shot_entries}
     all_shots_selected = len(selected_numbers) == len(scene.shots)
-    _scene_plan(scene)
+    configured_start_images = any(
+        shot.generate_start_image is not None for _, shot in shot_entries
+    )
+    profile = Profile.load(_profile_path(args.profile))
+    video_selection: WorkflowSelection | None = None
+    video_output_suffix = ".webm"
+    if not args.start_image_only:
+        video_selection = _workflow_selection(
+            profile,
+            "video",
+            path=getattr(args, "workflow", None),
+            adapter=getattr(args, "video_adapter", None),
+            model_groups=getattr(args, "video_model_group", None),
+        )
+        video_output_suffix = get_video_adapter(
+            video_selection.adapter
+        ).output_suffix.lower()
+    start_selection: WorkflowSelection | None = None
+    generations: dict[int, ResolvedStartImageGeneration] = {}
+    if configured_start_images:
+        start_selection = _workflow_selection(
+            profile,
+            "start_image",
+            path=getattr(args, "start_image_workflow", None),
+            adapter=getattr(args, "start_image_adapter", None),
+            model_groups=getattr(args, "start_image_model_group", None),
+        )
+        for index, shot in shot_entries:
+            if shot.generate_start_image is not None:
+                generations[index] = resolve_start_image_generation(
+                    shot.generate_start_image,
+                    start_selection.adapter,
+                    start_selection.defaults,
+                )
+    _scene_plan(scene, generations)
     if not all_shots_selected:
         print(f"Selected shots: {', '.join(map(str, sorted(selected_numbers)))}")
     if args.plan:
@@ -534,29 +646,23 @@ def render_scene(args: argparse.Namespace) -> None:
                 f"does not exist: {continuation}"
             )
 
-    configured_start_images = any(
-        shot.generate_start_image is not None for _, shot in shot_entries
-    )
     if args.start_image_only and not configured_start_images:
         raise ValueError(
             "--start-image-only requires at least one generate_start_image shot"
         )
-    profile = Profile.load(_profile_path(args.profile))
     base_workflow: dict[str, Any] | None = None
     video_workflow_sha256 = ""
     if not args.start_image_only:
-        workflow_path = Path(args.workflow)
-        if not workflow_path.is_absolute():
-            workflow_path = PROJECT_ROOT / workflow_path
-        base_workflow = load_workflow(workflow_path)
+        if video_selection is None:
+            raise RuntimeError("Video workflow selection is unavailable")
+        base_workflow = load_workflow(video_selection.path)
         video_workflow_sha256 = fingerprint(base_workflow)
     start_image_workflow: dict[str, Any] | None = None
     start_workflow_sha256: str | None = None
     if configured_start_images:
-        start_workflow_path = Path(args.start_image_workflow)
-        if not start_workflow_path.is_absolute():
-            start_workflow_path = PROJECT_ROOT / start_workflow_path
-        start_image_workflow = load_workflow(start_workflow_path)
+        if start_selection is None:
+            raise RuntimeError("Start image workflow selection is unavailable")
+        start_image_workflow = load_workflow(start_selection.path)
         start_workflow_sha256 = fingerprint(start_image_workflow)
 
     approved_images: dict[int, Path] = {}
@@ -569,6 +675,8 @@ def render_scene(args: argparse.Namespace) -> None:
             shot,
             index=index,
             profile=profile,
+            generation=generations[index],
+            start_workflow=start_selection,
             start_workflow_sha256=start_workflow_sha256,
         )
         start_metadata = read_metadata(
@@ -619,8 +727,12 @@ def render_scene(args: argparse.Namespace) -> None:
                 index=index,
                 start_image=expected_start_image,
                 profile=profile,
+                video_workflow=video_selection,
                 video_workflow_sha256=video_workflow_sha256,
+                video_output_suffix=video_output_suffix,
+                start_workflow=start_selection,
                 start_workflow_sha256=start_workflow_sha256,
+                generation=generations.get(index),
                 starting_state=(
                     scene.shots[index - 2].end_state if index > 1 else ""
                 ),
@@ -692,7 +804,7 @@ def render_scene(args: argparse.Namespace) -> None:
             return
         ordered_videos = [resumed_videos[index] for index, _ in shot_entries]
         if all_shots_selected:
-            final_video = output_root / f"{slugify(scene.title)}.webm"
+            final_video = output_root / f"{slugify(scene.title)}{video_output_suffix}"
             concatenate_webm(ordered_videos, final_video)
             write_render_manifest(
                 output_root,
@@ -716,9 +828,16 @@ def render_scene(args: argparse.Namespace) -> None:
         shot.generate_start_image is not None and index not in approved_images
         for index, shot in pending_entries
     )
-    required_models = () if args.start_image_only else profile.models
+    required_groups: list[str] = []
+    if not args.start_image_only:
+        if video_selection is None:
+            raise RuntimeError("Video workflow selection is unavailable")
+        required_groups.extend(video_selection.model_groups)
     if generates_start_images:
-        required_models += profile.start_image_models
+        if start_selection is None:
+            raise RuntimeError("Start image workflow selection is unavailable")
+        required_groups.extend(start_selection.model_groups)
+    required_models = profile.models_for_groups(required_groups)
     rendered_videos = dict(resumed_videos)
     generated_image_count = 0
 
@@ -738,8 +857,9 @@ def render_scene(args: argparse.Namespace) -> None:
                 print(f"Generating start keyframe for shot {index}: {shot.name}")
                 generation_started = time.monotonic()
                 generation_workflow = build_start_image_workflow(
+                    start_selection.adapter,
                     start_image_workflow,
-                    shot.generate_start_image,
+                    generations[index],
                     shot_number=index,
                     shot_name=shot.name,
                 )
@@ -780,6 +900,8 @@ def render_scene(args: argparse.Namespace) -> None:
                     shot,
                     index=index,
                     profile=profile,
+                    generation=generations[index],
+                    start_workflow=start_selection,
                     start_workflow_sha256=start_workflow_sha256,
                 )
                 write_start_image_metadata(
@@ -812,8 +934,12 @@ def render_scene(args: argparse.Namespace) -> None:
                 index=index,
                 start_image=start_image,
                 profile=profile,
+                video_workflow=video_selection,
                 video_workflow_sha256=video_workflow_sha256,
+                video_output_suffix=video_output_suffix,
+                start_workflow=start_selection,
                 start_workflow_sha256=start_workflow_sha256,
+                generation=generations.get(index),
                 starting_state=(
                     scene.shots[index - 2].end_state if index > 1 else ""
                 ),
@@ -841,6 +967,7 @@ def render_scene(args: argparse.Namespace) -> None:
             if base_workflow is None:
                 raise RuntimeError("Video workflow was not loaded")
             workflow = build_shot_workflow(
+                video_selection.adapter,
                 base_workflow,
                 scene,
                 shot,
@@ -866,23 +993,28 @@ def render_scene(args: argparse.Namespace) -> None:
                 getattr(args, "retries", 2),
                 lambda: comfy.download_outputs(history, shot_dir),
             )
-            webm_outputs = [path for path in outputs if path.suffix.lower() == ".webm"]
-            if len(webm_outputs) != 1:
+            video_outputs = [
+                path for path in outputs if path.suffix.lower() == video_output_suffix
+            ]
+            if len(video_outputs) != 1:
                 raise RuntimeError(
-                    f"Shot {shot.name!r} produced {len(webm_outputs)} WebM outputs; expected 1"
+                    f"Shot {shot.name!r} produced {len(video_outputs)} "
+                    f"{video_output_suffix} outputs; expected 1"
                 )
-            rendered_videos[index] = webm_outputs[0]
+            rendered_videos[index] = video_outputs[0]
             for output in outputs:
                 print(f"Downloaded: {output}")
 
             continuation = shot_dir / "continuation.png"
-            extract_last_frame(webm_outputs[0], continuation)
+            extract_last_frame(video_outputs[0], continuation)
             print(f"Extracted continuation frame: {continuation}")
-            _prune_old_shot_videos(shot_dir, webm_outputs[0])
+            _prune_old_shot_videos(
+                shot_dir, video_outputs[0], video_output_suffix
+            )
             write_shot_metadata(
                 shot_dir / "metadata.json",
                 inputs=shot_inputs,
-                video=webm_outputs[0],
+                video=video_outputs[0],
                 continuation=continuation,
                 output_root=output_root,
                 runtime=getattr(comfy, "runtime_metadata", {}),
@@ -916,7 +1048,7 @@ def render_scene(args: argparse.Namespace) -> None:
             selected_shots=sorted(selected_numbers),
         )
         return
-    final_video = output_root / f"{slugify(scene.title)}.webm"
+    final_video = output_root / f"{slugify(scene.title)}{video_output_suffix}"
     concatenate_webm(
         [rendered_videos[index] for index, _ in shot_entries], final_video
     )
@@ -959,9 +1091,43 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--profile")
     plan_parser.set_defaults(func=plan)
 
+    setup_parser = subparsers.add_parser(
+        "setup", help="Provision a worker and install selected model groups only"
+    )
+    setup_parser.add_argument("--profile")
+    setup_parser.add_argument(
+        "--model-group",
+        action="append",
+        help="Model group to install; repeat as needed (defaults to profile presets)",
+    )
+    setup_parser.add_argument("--ssh-key")
+    setup_parser.add_argument("--pod-id", help="Reuse an existing Pod")
+    setup_parser.add_argument("--start-timeout", type=int, default=900)
+    setup_parser.add_argument(
+        "--apply", action="store_true", help="Allow creation of billable resources"
+    )
+    setup_lifecycle = setup_parser.add_mutually_exclusive_group()
+    setup_lifecycle.add_argument("--keep-pod", action="store_true")
+    setup_lifecycle.add_argument(
+        "--stop-pod",
+        action="store_true",
+        help="Stop instead of terminating the Pod after setup",
+    )
+    setup_parser.add_argument(
+        "--idle-stop-minutes",
+        type=float,
+        help="With --keep-pod, stop the Pod after this many idle minutes",
+    )
+    setup_parser.set_defaults(func=setup)
+
     run_parser = subparsers.add_parser("run", help="Provision, render, download, and terminate")
     run_parser.add_argument("workflow", help="ComfyUI workflow exported in API format")
     run_parser.add_argument("--profile")
+    run_parser.add_argument(
+        "--model-group",
+        action="append",
+        help="Model group required by this workflow; repeat as needed",
+    )
     run_parser.add_argument("--ssh-key")
     run_parser.add_argument("--pod-id", help="Reuse an existing running Pod")
     run_parser.add_argument(
@@ -1003,12 +1169,24 @@ def build_parser() -> argparse.ArgumentParser:
     scene_parser.add_argument(
         "manifest", help="Scene JSON file or project directory containing scene.json"
     )
+    scene_parser.add_argument("--workflow", help="Override the profile video workflow")
+    scene_parser.add_argument("--video-adapter", help="Override the video adapter")
     scene_parser.add_argument(
-        "--workflow", default="workflows/wan22-i2v-14b-api.json"
+        "--video-model-group",
+        action="append",
+        help="Override video model groups; repeat as needed",
     )
     scene_parser.add_argument(
         "--start-image-workflow",
-        default="workflows/z-image-turbo-start-image-api.json",
+        help="Override the profile start-image workflow",
+    )
+    scene_parser.add_argument(
+        "--start-image-adapter", help="Override the start-image adapter"
+    )
+    scene_parser.add_argument(
+        "--start-image-model-group",
+        action="append",
+        help="Override start-image model groups; repeat as needed",
     )
     scene_parser.add_argument(
         "--start-image-only",

@@ -12,7 +12,7 @@
     {
       "name": "Standing Before Bed",
       "generate_start_image": {
-        "model_type": "z_image_turbo",
+        "adapter": "z_image_turbo",
         "prompt": "A wide, loosely framed, uncropped head-to-toe environmental photograph of a woman, age 18, standing centered in front of a neatly made bed. Her entire head and all of her straight blonde hair are fully visible, with generous empty wall above her head. Both bare feet and ample floor below them are visible. She occupies no more than 70 percent of the image height. The camera is pulled back six metres at chest height with a normal 50 mm perspective; this is a distant full-body shot, never a close portrait or cropped body shot. She faces the camera with both arms relaxed and both hands visible. She has a skinny teenage body, small beautiful natural breasts, AA cup, age 18, 167cm in height, straight blonde hair, and wears a matte black bra and matching black briefs with minimal smooth lace trimand. Cozy ordinary bedroom, neutral bedding, green houseplants, warm practical light, realistic natural skin, vertical composition.",
         "checkpoint": "cyberrealisticZImage_v50.safetensors",
         "width": 864,
@@ -56,6 +56,14 @@
       "duration_seconds": 5,
       "prompt": "the smiling woman waits for a big dick. she looks very awaiting for it, she looks in the camera, she puts her arm behind her back, she looks up to the camera",
       "camera": "locked medium shot, from above, face completly visible, clear unobstructed view, no zoom",
+      "negative_prompt": "",
+      "seed": 22005
+	},
+	{
+      "name": "kneeing down looking up",
+      "duration_seconds": 5,
+      "prompt": "die frau verändert ihre pose nicht. hört auf zu lachen und wird ernster. die kamera zoomt nicht, aber fährt weiter an die frau heran. die kamera geht nach oben. POV sicht aus einem 180cm großen mann, ohne dass man den mann sieht. die kamera ist schräg über dem gesicht der frau. die frau schaut hoch und wartet.",
+      "camera": "lfrom above, face completly visible, clear unobstructed view, no zoom",
       "negative_prompt": "",
       "seed": 22005
     }

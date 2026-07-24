@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 from runpod_video_automation import cli
+from runpod_video_automation.adapters import resolve_start_image_generation
 from runpod_video_automation.cli import build_parser
-from runpod_video_automation.config import ModelFile, Profile
+from runpod_video_automation.config import ModelFile, Profile, WorkflowPreset
 from runpod_video_automation.render_metadata import (
     build_shot_inputs,
     build_start_image_inputs,
@@ -17,14 +18,66 @@ from runpod_video_automation.render_metadata import (
 )
 
 
+def _profile(
+    video_models: tuple[ModelFile, ...] = (),
+    start_image_models: tuple[ModelFile, ...] = (),
+) -> Profile:
+    return Profile(
+        name="test",
+        image="image",
+        data_center_id="US-MO-1",
+        volume_name="volume",
+        volume_size_gb=1,
+        gpu_type_ids=("GPU",),
+        min_ram_per_gpu=1,
+        min_vcpu_per_gpu=1,
+        container_disk_gb=1,
+        max_hourly_cost=1.0,
+        model_groups={"video": video_models, "start-image": start_image_models},
+        workflows={
+            "video": WorkflowPreset(
+                Path("wan.json"), "wan22_i2v", ("video",)
+            ),
+            "start_image": WorkflowPreset(
+                Path("start.json"), "z_image_turbo", ("start-image",)
+            ),
+        },
+    )
+
+
 def test_cli_parser_includes_scene_command() -> None:
     args = build_parser().parse_args(
         ["scene", "scene.json", "--plan"]
     )
 
     assert args.command == "scene"
-    assert args.start_image_workflow == "workflows/z-image-turbo-start-image-api.json"
+    assert args.start_image_workflow is None
     assert args.output is None
+
+
+def test_setup_installs_selected_models_without_comfyui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    video_model = ModelFile("https://example.test/video", "models/video", 1)
+    image_model = ModelFile("https://example.test/image", "models/image", 1)
+    profile = _profile((video_model,), (image_model,))
+    installed: list[tuple[ModelFile, ...]] = []
+
+    @contextmanager
+    def fake_remote_session(args, loaded_profile, *, models):
+        assert loaded_profile is profile
+        installed.append(models)
+        yield object(), "pod-new", 1.0, {}
+
+    monkeypatch.setattr(cli.Profile, "load", lambda path: profile)
+    monkeypatch.setattr(cli, "_remote_session", fake_remote_session)
+    args = build_parser().parse_args(
+        ["setup", "--apply", "--model-group", "start-image", "--stop-pod"]
+    )
+
+    args.func(args)
+
+    assert installed == [(image_model,)]
 
 
 def test_scene_project_directory_uses_local_output(tmp_path: Path) -> None:
@@ -70,6 +123,88 @@ def test_scene_parser_accepts_start_image_only() -> None:
     )
 
     assert args.start_image_only is True
+
+
+@pytest.mark.parametrize("shot", ["0", "-1"])
+def test_scene_rejects_non_positive_shot_numbers(tmp_path: Path, shot: str) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"image")
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Invalid selection",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {"name": "Opening", "prompt": "A", "start_image": "start.png"}
+                ],
+            }
+        )
+    )
+    args = build_parser().parse_args(
+        ["scene", str(manifest), "--plan", f"--shot={shot}"]
+    )
+
+    with pytest.raises(ValueError, match="between 1 and 1"):
+        cli.render_scene(args)
+
+
+def test_partial_scene_plan_handles_unselected_generated_start_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Partial",
+                "global_prompt": "Same adult character",
+                "shots": [
+                    {
+                        "name": "Generated Opening",
+                        "prompt": "A",
+                        "generate_start_image": {"prompt": "Adult character"},
+                    },
+                    {"name": "Continuation", "prompt": "B"},
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    args = build_parser().parse_args(
+        ["scene", str(manifest), "--plan", "--shot", "2"]
+    )
+
+    cli.render_scene(args)
+
+    assert "generated start image (unselected shot)" in capsys.readouterr().out
+
+
+def test_run_resolves_workflow_from_current_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflow = tmp_path / "custom.json"
+    workflow.write_text("{}")
+    loaded: list[Path] = []
+
+    class ExpectedStop(Exception):
+        pass
+
+    def fake_load(path: Path):
+        loaded.append(path)
+        raise ExpectedStop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(cli, "load_workflow", fake_load)
+    args = build_parser().parse_args(["run", "custom.json", "--apply"])
+
+    with pytest.raises(ExpectedStop):
+        cli.run(args)
+
+    assert loaded == [workflow.resolve()]
 
 
 def test_scene_parser_accepts_stop_pod_and_rejects_keep_pod_combination() -> None:
@@ -165,10 +300,13 @@ def test_single_dependent_shot_requires_existing_continuation(
         )
     )
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
     monkeypatch.setattr(
-        cli.Profile,
-        "load",
-        lambda path: (_ for _ in ()).throw(AssertionError("Pod setup must not begin")),
+        cli,
+        "_worker_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Pod setup must not begin")
+        ),
     )
     args = Namespace(
         manifest=str(manifest),
@@ -217,20 +355,7 @@ def test_single_shot_uses_previous_and_writes_own_continuation(
     previous_continuation = output_root / "001-opening/continuation.png"
     previous_continuation.parent.mkdir(parents=True)
     previous_continuation.write_bytes(b"previous")
-    profile = Profile(
-        name="test",
-        image="image",
-        data_center_id="US-MO-1",
-        volume_name="volume",
-        volume_size_gb=1,
-        gpu_type_ids=("GPU",),
-        min_ram_per_gpu=1,
-        min_vcpu_per_gpu=1,
-        container_disk_gb=1,
-        max_hourly_cost=1.0,
-        models=(),
-        start_image_models=(),
-    )
+    profile = _profile()
     workflow = {
         node: {"class_type": "Test", "inputs": {}}
         for node in ("6", "7", "47", "50", "52", "57", "58")
@@ -318,7 +443,7 @@ def test_scene_start_image_only_skips_video_rendering(
                         "name": "Opening",
                         "prompt": "Standing in a room",
                         "generate_start_image": {
-                            "model_type": "z_image_turbo",
+                            "adapter": "z_image_turbo",
                             "prompt": "Adult woman standing in a room",
                             "width": 864,
                             "height": 1200,
@@ -331,20 +456,7 @@ def test_scene_start_image_only_skips_video_rendering(
     )
     wan_model = ModelFile("https://example.test/wan", "models/unet/wan", 1)
     start_model = ModelFile("https://example.test/image", "models/unet/image", 1)
-    profile = Profile(
-        name="test",
-        image="image",
-        data_center_id="US-MO-1",
-        volume_name="volume",
-        volume_size_gb=1,
-        gpu_type_ids=("GPU",),
-        min_ram_per_gpu=1,
-        min_vcpu_per_gpu=1,
-        container_disk_gb=1,
-        max_hourly_cost=1.0,
-        models=(wan_model,),
-        start_image_models=(start_model,),
-    )
+    profile = _profile((wan_model,), (start_model,))
     workflow = {
         node: {"class_type": "Test", "inputs": {}}
         for node in ("3", "4", "5", "6", "7", "9")
@@ -441,20 +553,7 @@ def test_resume_assembles_completed_shots_without_starting_pod(
     video.write_bytes(b"webm")
     continuation = video.parent / "continuation.png"
     continuation.write_bytes(b"continuation")
-    profile = Profile(
-        name="test",
-        image="image",
-        data_center_id="US-MO-1",
-        volume_name="volume",
-        volume_size_gb=1,
-        gpu_type_ids=("GPU",),
-        min_ram_per_gpu=1,
-        min_vcpu_per_gpu=1,
-        container_disk_gb=1,
-        max_hourly_cost=1.0,
-        models=(),
-        start_image_models=(),
-    )
+    profile = _profile()
     workflow = {"1": {"class_type": "Test", "inputs": {}}}
     loaded_scene = cli.Scene.load(manifest)
     start_snapshot = cli._snapshot_input(
@@ -469,6 +568,7 @@ def test_resume_assembles_completed_shots_without_starting_pod(
         index=1,
         start_image=start_snapshot,
         profile=profile,
+        video_workflow=profile.select_workflow("video"),
         video_workflow_sha256=fingerprint(workflow),
         start_workflow_sha256=None,
     )
@@ -551,7 +651,7 @@ def test_approved_start_image_skips_image_generation(
                         "name": "Opening",
                         "prompt": "A",
                         "generate_start_image": {
-                            "model_type": "z_image_turbo",
+                            "adapter": "z_image_turbo",
                             "prompt": "Adult woman standing in a room",
                         },
                     }
@@ -565,20 +665,7 @@ def test_approved_start_image_skips_image_generation(
     approved.write_bytes(b"png")
     wan_model = ModelFile("https://example.test/wan", "models/unet/wan", 1)
     start_model = ModelFile("https://example.test/start", "models/unet/start", 1)
-    profile = Profile(
-        name="test",
-        image="image",
-        data_center_id="US-MO-1",
-        volume_name="volume",
-        volume_size_gb=1,
-        gpu_type_ids=("GPU",),
-        min_ram_per_gpu=1,
-        min_vcpu_per_gpu=1,
-        container_disk_gb=1,
-        max_hourly_cost=1.0,
-        models=(wan_model,),
-        start_image_models=(start_model,),
-    )
+    profile = _profile((wan_model,), (start_model,))
     workflow = {
         node: {"class_type": "Test", "inputs": {}}
         for node in ("6", "7", "47", "50", "52", "57", "58")
@@ -586,10 +673,17 @@ def test_approved_start_image_skips_image_generation(
     uploads: list[Path] = []
     ensured_models: list[tuple[ModelFile, ...]] = []
     loaded_scene = cli.Scene.load(manifest)
+    generation = loaded_scene.shots[0].generate_start_image
+    assert generation is not None
+    start_selection = profile.select_workflow("start_image")
     start_inputs = build_start_image_inputs(
         loaded_scene.shots[0],
         index=1,
         profile=profile,
+        generation=resolve_start_image_generation(
+            generation, start_selection.adapter, start_selection.defaults
+        ),
+        start_workflow=start_selection,
         start_workflow_sha256=fingerprint(workflow),
     )
     write_start_image_metadata(
@@ -680,20 +774,7 @@ def test_resume_rerenders_changed_shot_and_dependent_successor(
     }
     manifest.write_text(json.dumps(old_manifest))
     output_root = tmp_path / "output"
-    profile = Profile(
-        name="test",
-        image="image",
-        data_center_id="US-MO-1",
-        volume_name="volume",
-        volume_size_gb=1,
-        gpu_type_ids=("GPU",),
-        min_ram_per_gpu=1,
-        min_vcpu_per_gpu=1,
-        container_disk_gb=1,
-        max_hourly_cost=1.0,
-        models=(),
-        start_image_models=(),
-    )
+    profile = _profile()
     workflow = {
         node: {"class_type": "Test", "inputs": {}}
         for node in ("6", "7", "47", "50", "52", "57", "58")
@@ -713,6 +794,7 @@ def test_resume_rerenders_changed_shot_and_dependent_successor(
             index=index,
             start_image=shot.start_image or previous_continuation,
             profile=profile,
+            video_workflow=profile.select_workflow("video"),
             video_workflow_sha256=fingerprint(workflow),
             start_workflow_sha256=None,
         )
@@ -852,8 +934,9 @@ def test_worker_session_reuses_and_restarts_existing_pod(
         def wait_for_ssh(self) -> None:
             events.append("ssh")
 
-        def ensure_models(self, models: tuple[object, ...]) -> None:
+        def ensure_models(self, models: tuple[object, ...], aliases: tuple = ()) -> None:
             assert models == ()
+            assert aliases == ()
             events.append("models")
 
         @contextmanager
@@ -877,20 +960,7 @@ def test_worker_session_reuses_and_restarts_existing_pod(
     monkeypatch.setattr(cli, "RunPodClient", FakeRunPodClient)
     monkeypatch.setattr(cli, "RemoteWorker", FakeRemoteWorker)
     monkeypatch.setattr(cli, "ComfyClient", FakeComfyClient)
-    profile = Profile(
-        name="test",
-        image="image",
-        data_center_id="US-MO-1",
-        volume_name="volume",
-        volume_size_gb=1,
-        gpu_type_ids=("GPU",),
-        min_ram_per_gpu=1,
-        min_vcpu_per_gpu=1,
-        container_disk_gb=1,
-        max_hourly_cost=1.0,
-        models=(),
-        start_image_models=(),
-    )
+    profile = _profile()
     args = Namespace(
         ssh_key=str(ssh_key),
         pod_id="pod-1",

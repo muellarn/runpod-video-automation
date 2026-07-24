@@ -36,6 +36,24 @@ uv run runpod-video plan
 
 ## Render
 
+Install model groups without queueing a generation:
+
+```bash
+uv run runpod-video setup \
+  --apply \
+  --model-group wan22-i2v \
+  --model-group z-image-turbo \
+  --stop-pod
+```
+
+`setup` creates a new Pod unless `--pod-id` is explicitly supplied, mounts the
+profile's Network Volume, verifies or downloads the selected files, creates the
+configured model-path aliases, and exits without opening ComfyUI or queueing a
+workflow. It is still billable while the setup Pod runs. Existing complete
+files are skipped; `.part` downloads resume after interruptions. Without
+`--model-group`, setup installs the union required by all profile workflow
+presets.
+
 The included `workflows/wan22-i2v-14b-api.json` is an API-format conversion of
 ComfyUI's official Wan 2.2 14B I2V example. It produces a WebM output. Upload an
 input image as `input.png` and override node 6 for the motion prompt:
@@ -43,6 +61,7 @@ input image as `input.png` and override node 6 for the motion prompt:
 ```bash
 uv run runpod-video run workflows/wan22-i2v-14b-api.json \
   --apply \
+  --model-group wan22-i2v \
   --image start.png:input.png \
   --set '6.text=A detailed motion prompt' \
   --output output
@@ -53,17 +72,15 @@ as strings. For the included workflow, node 6 is the positive prompt, node 7 is
 the negative prompt, node 52 is the input filename, node 57 contains the random
 seed, and node 50 controls width, height, frame count, and batch size.
 
-Custom workflows can be exported with `Workflow -> Export (API)` and must
-reference the model filenames from `profiles/wan22-i2v-fp8.json`.
+Custom workflows can be exported with `Workflow -> Export (API)`. Select their
+dependencies with one or more `--model-group` options.
 
 During execution, the CLI connects to ComfyUI's WebSocket before queueing the
 workflow and prints node transitions plus sampler steps and percentages. If the
 WebSocket is unavailable, execution continues with history polling. CLI output
 is line-buffered, so status updates also appear immediately in redirected or
 `nohup` logs. Download, start-image, node, sampler, output, and completion
-progress is therefore shown directly by the main command; `watch-progress.py`
-is only an optional compact view for an already redirected log and is not
-started automatically.
+progress is therefore shown directly by the main command.
 
 Uploads, ComfyUI execution, and output downloads are retried twice by default.
 Set a different number of retries with `--retries N`. Before retrying a failed
@@ -96,19 +113,14 @@ self-contained while `--output` remains available as an override.
 Validate the included example without creating cloud resources:
 
 ```bash
-uv run runpod-video scene examples/scene.example.json --plan
+uv run runpod-video scene projects/cozy-bedroom --plan
 ```
 
 Render every shot and assemble the WebM clips locally with FFmpeg:
 
 ```bash
-uv run runpod-video scene examples/scene.example.json \
-  --apply \
-  --output output/window-scene
+uv run runpod-video scene projects/cozy-bedroom --apply
 ```
-
-The tiny PPM keyframes included with the example only make it self-validating.
-Replace them with suitable PNG, JPEG, or WebP keyframes before a real render.
 
 A manifest supports these scene-level fields:
 
@@ -141,8 +153,10 @@ The first shot requires either `start_image` or `generate_start_image`. Generate
 keyframes are created with the included Z-Image workflow on the same Pod, downloaded
 to `000-generated-start-image`, and uploaded back into ComfyUI for Wan I2V. The
 optional Z-Image model, text encoder, and VAE are only downloaded when a scene
-requests generation. Set `model_type` to `z_image_turbo`; distilled Z-Image uses
-zeroed negative conditioning and therefore does not accept `negative_prompt`.
+requests generation. The profile selects the default start-image adapter; an
+individual request may set `adapter` only when it matches the selected workflow.
+Distilled Z-Image uses zeroed negative conditioning and therefore does not
+accept `negative_prompt`.
 A later shot may omit both fields; the orchestrator then uses the previous
 clip's final frame as the next start keyframe. Every rendered shot, including
 the final shot, writes that frame to `continuation.png` in its numbered output
@@ -249,7 +263,7 @@ Every successfully rendered shot writes `metadata.json` beside its WebM and
 - global, shot, camera, effective positive, and effective negative prompts
 - seed, CFG, steps, transition step, dimensions, FPS, and frame count
 - start/end image hashes and generated-start-image configuration
-- worker image, workflow hashes, model URLs, model sizes, and known model hashes
+- worker image, adapters, model groups, workflow hashes, model URLs, sizes, and hashes
 - output paths, sizes, and SHA-256 hashes
 - Pod ID, GPU, hourly price, completion time, and measured shot duration
 - a canonical fingerprint of all quality-relevant inputs
@@ -348,17 +362,56 @@ uv run runpod-video cleanup --all
 
 ## Profiles
 
-The included profile uses the four official Comfy-Org Wan 2.2 I2V FP8 files
-needed by the starter workflow and prefers 80 GB GPUs. It stores diffusion
-models under `models/unet` and text encoders under `models/clip`, matching the
-Network Volume paths exposed by the pinned worker image. Add LoRAs as extra
-model entries in a copied profile and reference them from the API workflow. A
-profile controls:
+Profiles separate infrastructure from model and workflow selection. The
+included profile defines independent `wan22-i2v` and `z-image-turbo` groups,
+plus `video` and `start_image` workflow presets. A preset binds an API workflow
+to an adapter, any number of model groups, and optional adapter defaults such as
+the checkpoint or sampler. Scene CLI overrides retain the preset's other
+values: `--workflow`, `--video-adapter`, `--video-model-group`,
+`--start-image-workflow`, `--start-image-adapter`, and
+`--start-image-model-group` can be changed independently.
+
+Node-specific workflow mutation lives in `adapters.py`, not in the scene
+orchestrator. Supporting another model family therefore means adding a small
+adapter, workflow JSON, model group, and workflow preset. The low-level `run`
+command remains adapter-independent.
+
+A profile controls:
 
 - Docker image and GPU fallback order
 - data center and persistent volume size
 - minimum system RAM and vCPU
-- exact HTTPS model downloads and destination paths
+- arbitrary named groups of exact HTTPS model downloads and destination paths
+- model-directory aliases exposed to the worker image
+- default workflow paths, adapters, model groups, and adapter settings
+
+Minimal structure:
+
+```json
+{
+  "model_groups": {
+    "my-video-model": [
+      {"url": "https://example/model.safetensors", "path": "models/unet/model.safetensors"}
+    ]
+  },
+  "model_path_aliases": [
+    {"source": "models/diffusion_models", "target": "models/unet"}
+  ],
+  "workflows": {
+    "video": {
+      "path": "../workflows/video-api.json",
+      "adapter": "my_video_adapter",
+      "model_groups": ["my-video-model"]
+    }
+  }
+}
+```
+
+Model aliases preserve paths below their source directory. For example,
+`models/diffusion_models` to `models/unet` exposes every selected diffusion
+model under the worker's expected loader directory without duplicating the
+file. Conflicting model destinations or alias targets are rejected before
+generation.
 
 Network Volumes are tied to one data center. Change both `data_center_id` and
 `volume_name` together when using another region.

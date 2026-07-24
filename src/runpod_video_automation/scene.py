@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import copy
 import json
 import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 def _required_string(value: object, field: str) -> str:
@@ -55,17 +53,17 @@ def _ffconcat_path(path: Path) -> str:
 
 @dataclass(frozen=True)
 class StartImageGeneration:
-    model_type: str
+    adapter: str | None
     prompt: str
     negative_prompt: str
-    checkpoint: str
+    checkpoint: str | None
     width: int
     height: int
     seed: int
-    steps: int
-    cfg: float
-    sampler_name: str
-    scheduler: str
+    steps: int | None
+    cfg: float | None
+    sampler_name: str | None
+    scheduler: str | None
 
 
 @dataclass(frozen=True)
@@ -165,35 +163,33 @@ class Scene:
                         f"Scene field 'shots[{index}].generate_start_image' "
                         "must be an object"
                     )
+                if "model_type" in raw_generation:
+                    raise ValueError(
+                        f"Scene field 'shots[{index}].generate_start_image.model_type' "
+                        "was replaced by 'adapter'"
+                    )
                 generation_width = int(raw_generation.get("width", width))
                 generation_height = int(raw_generation.get("height", height))
                 generation_seed = int(raw_generation.get("seed", 1000 + index))
-                generation_model_type = _required_string(
-                    raw_generation.get("model_type", "sdxl"),
-                    f"shots[{index}].generate_start_image.model_type",
-                ).lower()
-                if generation_model_type not in {"sdxl", "z_image_turbo"}:
+                raw_adapter = raw_generation.get("adapter")
+                if raw_adapter is not None and (
+                    not isinstance(raw_adapter, str) or not raw_adapter.strip()
+                ):
                     raise ValueError(
-                        f"Scene shot {name!r} generated image model_type must be "
-                        "'sdxl' or 'z_image_turbo'"
+                        f"Scene field 'shots[{index}].generate_start_image.adapter' "
+                        "must be a non-empty string"
                     )
-                default_steps = 8 if generation_model_type == "z_image_turbo" else 30
-                default_cfg = 1.0 if generation_model_type == "z_image_turbo" else 7.0
-                default_checkpoint = (
-                    "cyberrealisticZImage_v50.safetensors"
-                    if generation_model_type == "z_image_turbo"
-                    else "sd_xl_base_1.0.safetensors"
+                generation_adapter = raw_adapter.strip() if raw_adapter else None
+                generation_steps = (
+                    int(raw_generation["steps"])
+                    if raw_generation.get("steps") is not None
+                    else None
                 )
-                default_sampler = (
-                    "res_multistep"
-                    if generation_model_type == "z_image_turbo"
-                    else "dpmpp_2m"
+                generation_cfg = (
+                    float(raw_generation["cfg"])
+                    if raw_generation.get("cfg") is not None
+                    else None
                 )
-                default_scheduler = (
-                    "simple" if generation_model_type == "z_image_turbo" else "karras"
-                )
-                generation_steps = int(raw_generation.get("steps", default_steps))
-                generation_cfg = float(raw_generation.get("cfg", default_cfg))
                 if (
                     generation_width <= 0
                     or generation_height <= 0
@@ -208,7 +204,9 @@ class Scene:
                     raise ValueError(
                         f"Scene shot {name!r} generated image seed is out of range"
                     )
-                if generation_steps <= 0 or generation_cfg <= 0:
+                if (generation_steps is not None and generation_steps <= 0) or (
+                    generation_cfg is not None and generation_cfg <= 0
+                ):
                     raise ValueError(
                         f"Scene shot {name!r} generated image steps and CFG "
                         "must be positive"
@@ -217,34 +215,41 @@ class Scene:
                     raw_generation.get("negative_prompt"),
                     f"shots[{index}].generate_start_image.negative_prompt",
                 )
-                if generation_model_type == "z_image_turbo" and generation_negative_prompt:
-                    raise ValueError(
-                        f"Scene shot {name!r} uses Z-Image Turbo, which does not "
-                        "support negative prompting"
-                    )
                 generation = StartImageGeneration(
-                    model_type=generation_model_type,
+                    adapter=generation_adapter,
                     prompt=_required_string(
                         raw_generation.get("prompt"),
                         f"shots[{index}].generate_start_image.prompt",
                     ),
                     negative_prompt=generation_negative_prompt,
-                    checkpoint=_required_string(
-                        raw_generation.get("checkpoint", default_checkpoint),
-                        f"shots[{index}].generate_start_image.checkpoint",
+                    checkpoint=(
+                        _required_string(
+                            raw_generation.get("checkpoint"),
+                            f"shots[{index}].generate_start_image.checkpoint",
+                        )
+                        if raw_generation.get("checkpoint") is not None
+                        else None
                     ),
                     width=generation_width,
                     height=generation_height,
                     seed=generation_seed,
                     steps=generation_steps,
                     cfg=generation_cfg,
-                    sampler_name=_required_string(
-                        raw_generation.get("sampler_name", default_sampler),
-                        f"shots[{index}].generate_start_image.sampler_name",
+                    sampler_name=(
+                        _required_string(
+                            raw_generation.get("sampler_name"),
+                            f"shots[{index}].generate_start_image.sampler_name",
+                        )
+                        if raw_generation.get("sampler_name") is not None
+                        else None
                     ),
-                    scheduler=_required_string(
-                        raw_generation.get("scheduler", default_scheduler),
-                        f"shots[{index}].generate_start_image.scheduler",
+                    scheduler=(
+                        _required_string(
+                            raw_generation.get("scheduler"),
+                            f"shots[{index}].generate_start_image.scheduler",
+                        )
+                        if raw_generation.get("scheduler") is not None
+                        else None
                     ),
                 )
             if start_image is not None and generation is not None:
@@ -302,126 +307,6 @@ class Scene:
     @property
     def duration_seconds(self) -> float:
         return sum(shot.frames / self.fps for shot in self.shots)
-
-
-def _node_inputs(workflow: dict[str, Any], node_id: str) -> dict[str, Any]:
-    node = workflow.get(node_id)
-    inputs = node.get("inputs") if isinstance(node, dict) else None
-    if not isinstance(inputs, dict):
-        raise ValueError(f"Scene workflow is missing node {node_id}")
-    return inputs
-
-
-def build_start_image_workflow(
-    base_workflow: dict[str, Any],
-    generation: StartImageGeneration,
-    *,
-    shot_number: int,
-    shot_name: str,
-) -> dict[str, Any]:
-    workflow = copy.deepcopy(base_workflow)
-    model_inputs = _node_inputs(workflow, "4")
-    model_input_name = (
-        "unet_name" if generation.model_type == "z_image_turbo" else "ckpt_name"
-    )
-    model_inputs[model_input_name] = generation.checkpoint
-    _node_inputs(workflow, "5").update(
-        {
-            "width": generation.width,
-            "height": generation.height,
-            "batch_size": 1,
-        }
-    )
-    _node_inputs(workflow, "6")["text"] = generation.prompt
-    if generation.model_type == "sdxl":
-        _node_inputs(workflow, "7")["text"] = generation.negative_prompt
-    _node_inputs(workflow, "3").update(
-        {
-            "seed": generation.seed,
-            "steps": generation.steps,
-            "cfg": generation.cfg,
-            "sampler_name": generation.sampler_name,
-            "scheduler": generation.scheduler,
-            "denoise": 1.0,
-        }
-    )
-    _node_inputs(workflow, "9")["filename_prefix"] = (
-        f"generated/{shot_number:03d}-{slugify(shot_name)}"
-    )
-    return workflow
-
-
-def build_shot_workflow(
-    base_workflow: dict[str, Any],
-    scene: Scene,
-    shot: Shot,
-    *,
-    shot_number: int,
-    start_image_name: str,
-    end_image_name: str | None = None,
-    starting_state: str = "",
-) -> dict[str, Any]:
-    workflow = copy.deepcopy(base_workflow)
-    prompt_parts = [scene.global_prompt]
-    if starting_state:
-        prompt_parts.append(f"Starting state: {starting_state}")
-    if shot.prompt:
-        prompt_parts.append(f"Current action: {shot.prompt}")
-    if shot.camera:
-        prompt_parts.append(f"Camera: {shot.camera}")
-    _node_inputs(workflow, "6")["text"] = ", ".join(
-        part for part in prompt_parts if part
-    )
-    _node_inputs(workflow, "7")["text"] = ", ".join(
-        part for part in (scene.negative_prompt, shot.negative_prompt) if part
-    )
-    _node_inputs(workflow, "52")["image"] = start_image_name
-
-    conditioning = _node_inputs(workflow, "50")
-    conditioning.update(
-        {
-            "width": scene.width,
-            "height": scene.height,
-            "length": shot.frames,
-            "batch_size": 1,
-            "start_image": ["52", 0],
-        }
-    )
-    if end_image_name:
-        workflow["50"]["class_type"] = "WanFirstLastFrameToVideo"
-        conditioning["end_image"] = ["53", 0]
-        workflow["53"] = {
-            "class_type": "LoadImage",
-            "inputs": {"image": end_image_name},
-        }
-    else:
-        workflow["50"]["class_type"] = "WanImageToVideo"
-        conditioning.pop("end_image", None)
-        workflow.pop("53", None)
-
-    high_sampler = _node_inputs(workflow, "57")
-    low_sampler = _node_inputs(workflow, "58")
-    high_sampler.update(
-        {
-            "noise_seed": shot.seed,
-            "steps": scene.steps,
-            "cfg": shot.cfg,
-            "start_at_step": 0,
-            "end_at_step": scene.transition_step,
-        }
-    )
-    low_sampler.update(
-        {
-            "steps": scene.steps,
-            "cfg": shot.cfg,
-            "start_at_step": scene.transition_step,
-            "end_at_step": 10000,
-        }
-    )
-    prefix = f"scene/{shot_number:03d}-{slugify(shot.name)}"
-    webm = _node_inputs(workflow, "47")
-    webm.update({"filename_prefix": prefix, "fps": scene.fps})
-    return workflow
 
 
 def extract_last_frame(video: Path, destination: Path) -> None:

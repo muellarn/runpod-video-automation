@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from runpod_video_automation.config import ModelFile, Profile
+from runpod_video_automation.adapters import ResolvedStartImageGeneration
+from runpod_video_automation.config import ModelFile, Profile, WorkflowSelection
 from runpod_video_automation.scene import Scene, Shot, slugify
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def sha256_file(path: Path) -> str:
@@ -41,6 +41,25 @@ def _model(model: ModelFile) -> dict[str, Any]:
     }
 
 
+def _workflow(
+    selection: WorkflowSelection,
+    workflow_sha256: str,
+    *,
+    output_suffix: str | None = None,
+) -> dict[str, Any]:
+    value = {
+        "name": selection.name,
+        "adapter": selection.adapter,
+        "sha256": workflow_sha256,
+        "model_groups": list(selection.model_groups),
+        "models": [_model(model) for model in selection.models],
+        "defaults": selection.defaults,
+    }
+    if output_suffix is not None:
+        value["output_suffix"] = output_suffix
+    return value
+
+
 def fingerprint(value: dict[str, Any]) -> str:
     encoded = json.dumps(
         value,
@@ -58,8 +77,12 @@ def build_shot_inputs(
     index: int,
     start_image: Path | None,
     profile: Profile,
+    video_workflow: WorkflowSelection,
     video_workflow_sha256: str,
-    start_workflow_sha256: str | None,
+    video_output_suffix: str = ".webm",
+    start_workflow: WorkflowSelection | None = None,
+    start_workflow_sha256: str | None = None,
+    generation: ResolvedStartImageGeneration | None = None,
     starting_state: str = "",
     end_image: Path | None = None,
 ) -> dict[str, Any]:
@@ -109,21 +132,25 @@ def build_shot_inputs(
             "start_image": _asset(start_image),
             "end_image": _asset(end_image if end_image is not None else shot.end_image),
             "generation": (
-                asdict(shot.generate_start_image)
-                if shot.generate_start_image is not None
-                else None
+                generation.metadata() if generation is not None else None
             ),
         },
         "runtime": {
             "container_image": profile.image,
-            "video_workflow_sha256": video_workflow_sha256,
-            "start_workflow_sha256": start_workflow_sha256,
-            "video_models": [_model(model) for model in profile.models],
-            "start_image_models": (
-                [_model(model) for model in profile.start_image_models]
-                if shot.generate_start_image is not None
-                else []
+            "video_workflow": _workflow(
+                video_workflow,
+                video_workflow_sha256,
+                output_suffix=video_output_suffix,
             ),
+            "start_image_workflow": (
+                _workflow(start_workflow, start_workflow_sha256)
+                if start_workflow is not None and start_workflow_sha256 is not None
+                else None
+            ),
+            "model_path_aliases": [
+                {"source": alias.source, "target": alias.target}
+                for alias in profile.model_path_aliases
+            ],
         },
     }
 
@@ -133,18 +160,23 @@ def build_start_image_inputs(
     *,
     index: int,
     profile: Profile,
+    generation: ResolvedStartImageGeneration,
+    start_workflow: WorkflowSelection,
     start_workflow_sha256: str,
 ) -> dict[str, Any]:
     if shot.generate_start_image is None:
         raise ValueError(f"Shot {index} does not configure start image generation")
     return {
         "shot": {"index": index, "name": shot.name},
-        "generation": asdict(shot.generate_start_image),
+        "generation": generation.metadata(),
         "runtime": {
             "container_image": profile.image,
-            "start_workflow_sha256": start_workflow_sha256,
-            "start_image_models": [
-                _model(model) for model in profile.start_image_models
+            "start_image_workflow": _workflow(
+                start_workflow, start_workflow_sha256
+            ),
+            "model_path_aliases": [
+                {"source": alias.source, "target": alias.target}
+                for alias in profile.model_path_aliases
             ],
         },
     }

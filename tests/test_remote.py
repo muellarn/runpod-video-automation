@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from runpod_video_automation.config import ModelFile
+from runpod_video_automation.config import ModelFile, ModelPathAlias
 from runpod_video_automation.remote import RemoteWorker
 
 
@@ -102,7 +102,11 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
                 "models/text_encoders/encoder.safetensors",
                 200,
             ),
-        )
+        ),
+        (
+            ModelPathAlias("models/diffusion_models", "models/unet"),
+            ModelPathAlias("models/text_encoders", "models/clip"),
+        ),
     )
 
     download_command, _ = calls[1]
@@ -115,3 +119,4 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
         "ln -sfn /runpod-volume/models/text_encoders/encoder.safetensors "
         "/runpod-volume/models/clip/encoder.safetensors"
     ) in download_command
+    assert "|| status=1; fi" in download_command

@@ -19,44 +19,75 @@
   "min_vcpu_per_gpu": 8,
   "container_disk_gb": 50,
   "max_hourly_cost": 3.5,
-  "start_image_models": [
+  "model_groups": {
+    "wan22-i2v": [
+      {
+        "path": "models/unet/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        "size": 14294742832
+      },
+      {
+        "path": "models/unet/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+        "size": 14294742832
+      },
+      {
+        "path": "models/clip/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "size": 6735906897
+      },
+      {
+        "path": "models/vae/wan_2.1_vae.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/vae/wan_2.1_vae.safetensors",
+        "size": 253815318
+      }
+    ],
+    "z-image-turbo": [
+      {
+        "path": "models/diffusion_models/cyberrealisticZImage_v50.safetensors",
+        "url": "https://huggingface.co/publikey/cyberrealistic-z-image-turbo/resolve/c2eade2d19be3c9b2d51ecac4820dcfde23ccf99/cyberrealisticZImage_v50.safetensors",
+        "size": 12566044072,
+        "sha256": "e48bbd5b7bc496de4e91741639ce8d09d74f2fd308a99be6378208fd2e0707b5"
+      },
+      {
+        "path": "models/text_encoders/qwen_3_4b.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/d24c4cf2a0cd98a42f23467e27e3d76ee9438b8e/split_files/text_encoders/qwen_3_4b.safetensors",
+        "size": 8044982048
+      },
+      {
+        "path": "models/vae/ae.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/d24c4cf2a0cd98a42f23467e27e3d76ee9438b8e/split_files/vae/ae.safetensors",
+        "size": 335304388
+      }
+    ]
+  },
+  "model_path_aliases": [
     {
-      "path": "models/diffusion_models/cyberrealisticZImage_v50.safetensors",
-      "url": "https://huggingface.co/publikey/cyberrealistic-z-image-turbo/resolve/c2eade2d19be3c9b2d51ecac4820dcfde23ccf99/cyberrealisticZImage_v50.safetensors",
-      "size": 12566044072,
-      "sha256": "e48bbd5b7bc496de4e91741639ce8d09d74f2fd308a99be6378208fd2e0707b5"
+      "source": "models/diffusion_models",
+      "target": "models/unet"
     },
     {
-      "path": "models/text_encoders/qwen_3_4b.safetensors",
-      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/d24c4cf2a0cd98a42f23467e27e3d76ee9438b8e/split_files/text_encoders/qwen_3_4b.safetensors",
-      "size": 8044982048
-    },
-    {
-      "path": "models/vae/ae.safetensors",
-      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/d24c4cf2a0cd98a42f23467e27e3d76ee9438b8e/split_files/vae/ae.safetensors",
-      "size": 335304388
+      "source": "models/text_encoders",
+      "target": "models/clip"
     }
   ],
-  "models": [
-    {
-      "path": "models/unet/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
-      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
-      "size": 14294742832
+  "workflows": {
+    "video": {
+      "path": "../workflows/wan22-i2v-14b-api.json",
+      "adapter": "wan22_i2v",
+      "model_groups": ["wan22-i2v"]
     },
-    {
-      "path": "models/unet/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
-      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
-      "size": 14294742832
-    },
-    {
-      "path": "models/clip/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-      "size": 6735906897
-    },
-    {
-      "path": "models/vae/wan_2.1_vae.safetensors",
-      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/vae/wan_2.1_vae.safetensors",
-      "size": 253815318
+    "start_image": {
+      "path": "../workflows/z-image-turbo-start-image-api.json",
+      "adapter": "z_image_turbo",
+      "model_groups": ["z-image-turbo"],
+      "defaults": {
+        "checkpoint": "cyberrealisticZImage_v50.safetensors",
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple"
+      }
     }
-  ]
+  }
 }
