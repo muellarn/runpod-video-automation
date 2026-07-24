@@ -127,6 +127,7 @@ class Profile:
     container_disk_gb: int
     max_hourly_cost: float
     model_groups: dict[str, tuple[ModelFile, ...]] = field(default_factory=dict)
+    setup_model_groups: tuple[str, ...] = ()
     model_path_aliases: tuple[ModelPathAlias, ...] = ()
     workflows: dict[str, WorkflowPreset] = field(default_factory=dict)
     system_packages: tuple[str, ...] = ()
@@ -184,6 +185,17 @@ class Profile:
         }
         if len(workflows) != len(raw_workflows):
             raise ValueError("Workflow names and definitions must be valid objects")
+        raw_setup_groups = data.get("setup_model_groups", [])
+        if not isinstance(raw_setup_groups, list) or not all(
+            isinstance(group, str) and group for group in raw_setup_groups
+        ):
+            raise ValueError("Profile field 'setup_model_groups' must be a string list")
+        unknown_setup_groups = sorted(set(raw_setup_groups) - set(model_groups))
+        if unknown_setup_groups:
+            raise ValueError(
+                "Profile setup_model_groups references unknown model groups: "
+                + ", ".join(unknown_setup_groups)
+            )
         system_packages = data.get("system_packages", [])
         if not isinstance(system_packages, list) or not all(
             isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9.+-]+", item)
@@ -210,6 +222,7 @@ class Profile:
             container_disk_gb=int(data.get("container_disk_gb", 50)),
             max_hourly_cost=max_hourly_cost,
             model_groups=model_groups,
+            setup_model_groups=tuple(raw_setup_groups),
             model_path_aliases=aliases,
             workflows=workflows,
             system_packages=tuple(system_packages),
@@ -265,6 +278,8 @@ class Profile:
 
     @property
     def default_model_groups(self) -> tuple[str, ...]:
+        if self.setup_model_groups:
+            return self.setup_model_groups
         referenced = {
             group for workflow in self.workflows.values() for group in workflow.model_groups
         }

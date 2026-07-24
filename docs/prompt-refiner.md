@@ -71,6 +71,11 @@ A cache hit skips the refiner process and does not create a Pod during
 `--plan`. A cache miss under `--plan` reports that refinement must first be
 created with `--apply`.
 
+Image approval with `--refine-prompts` requires a matching refinement cache.
+Create the refinement and generated images first; this prevents an approval
+failure from provisioning or interrupting a worker merely to discover the
+effective refined prompts.
+
 When an existing Pod is named with `--pod-id`, any command that runs the refiner
 also requires `--restart`. This explicit opt-in permits the command to stop the
 current ComfyUI workload before loading the language model:
@@ -135,14 +140,15 @@ The refiner receives and may return only these prompt-bearing values:
 
 - scene `global_prompt` and `negative_prompt`
 - shot `prompt`, `camera`, `negative_prompt`, and `end_state`
-- generated start-image `prompt` and `negative_prompt`
+- generated start- and end-image `prompt` and `negative_prompt`
 
 The orchestrator applies that overlay to a deep copy of the source document.
 It rejects extra fields, changed shot names or counts, malformed JSON, invalid
-scene values, and attempts to add generated start images. Titles, paths,
+scene values, and attempts to add generated start or end images. Titles, paths,
 dimensions, sampling settings, seeds, shot order, and all other values remain
 source-controlled.
 
-Refinement provenance is included in start-image inputs, shot inputs, canonical
-fingerprints, and `render-manifest.json`. Changing the refiner inputs therefore
-invalidates affected `--resume` outputs instead of silently reusing them.
+Refinement provenance is included in generated-image inputs, shot inputs,
+canonical fingerprints, and `render-manifest.json`. Changing the refiner inputs
+therefore invalidates affected `--resume` outputs instead of silently reusing
+them.

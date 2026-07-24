@@ -59,6 +59,11 @@ def _source(tmp_path: Path) -> Path:
                             "prompt": "Adult character in a room",
                             "negative_prompt": "noise",
                         },
+                        "generate_end_image": {
+                            "prompt": "Turn Picture 1 toward the window",
+                            "negative_prompt": "identity drift",
+                            "reference_images": [{"source": "current_start"}],
+                        },
                     }
                 ],
             }
@@ -82,6 +87,22 @@ def _overlay(*, name: str = "Opening") -> dict[str, object]:
                     "Fictional adult character standing in a room"
                 ),
                 "generate_start_image_negative_prompt": "noise, malformed hands",
+                "generate_start_image_context": {
+                    "workflow": "start_image",
+                    "adapter": None,
+                    "reference_images": [],
+                },
+                "generate_end_image_prompt": (
+                    "Preserve Picture 1 and turn the adult character toward the window"
+                ),
+                "generate_end_image_negative_prompt": (
+                    "identity drift, malformed hands"
+                ),
+                "generate_end_image_context": {
+                    "workflow": "image_edit",
+                    "adapter": None,
+                    "reference_images": [{"source": "current_start"}],
+                },
             }
         ],
     }
@@ -91,9 +112,11 @@ class _Client:
     def __init__(self, overlay: dict[str, object]) -> None:
         self.overlay = overlay
         self.calls = 0
+        self.user_prompt: str | None = None
 
-    def chat_completion(self, **_: object) -> str:
+    def chat_completion(self, **kwargs: object) -> str:
         self.calls += 1
+        self.user_prompt = str(kwargs["user_prompt"])
         return json.dumps(self.overlay)
 
 
@@ -119,8 +142,24 @@ def test_refinement_changes_only_prompt_fields_and_uses_cache(tmp_path: Path) ->
         "prompt": "Fictional adult character standing in a room",
         "negative_prompt": "noise, malformed hands",
     }
+    assert result.document["shots"][0]["generate_end_image"] == {
+        "prompt": (
+            "Preserve Picture 1 and turn the adult character toward the window"
+        ),
+        "negative_prompt": "identity drift, malformed hands",
+        "reference_images": [{"source": "current_start"}],
+    }
     assert result.provenance["inputs"]["model"]["sha256"] == "b" * 64
     assert client.calls == 1
+    payload = json.loads(client.user_prompt or "{}")
+    assert payload["shots"][0]["generate_end_image_prompt"] == (
+        "Turn Picture 1 toward the window"
+    )
+    assert payload["shots"][0]["generate_end_image_context"] == {
+        "workflow": "image_edit",
+        "adapter": None,
+        "reference_images": [{"source": "current_start"}],
+    }
 
     cached = load_cached_refinement(
         source_path=source,
@@ -137,6 +176,19 @@ def test_refinement_rejects_changed_shot_name(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="changed shot 1 name"):
         refine_scene(
             client=_Client(_overlay(name="Renamed")),
+            source_path=_source(tmp_path),
+            output_root=tmp_path / "output",
+            profile=_profile(tmp_path),
+        )
+
+
+def test_refinement_rejects_changed_generated_image_context(tmp_path: Path) -> None:
+    overlay = _overlay()
+    overlay["shots"][0]["generate_end_image_context"]["reference_images"] = []
+
+    with pytest.raises(ValueError, match="changed shot 1 generated end image context"):
+        refine_scene(
+            client=_Client(overlay),
             source_path=_source(tmp_path),
             output_root=tmp_path / "output",
             profile=_profile(tmp_path),

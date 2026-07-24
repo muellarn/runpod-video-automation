@@ -15,7 +15,7 @@ from runpod_video_automation.render_metadata import fingerprint, sha256_file
 from runpod_video_automation.scene import Scene
 
 
-REFINEMENT_SCHEMA_VERSION = 1
+REFINEMENT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -130,6 +130,20 @@ def load_cached_refinement(
     )
 
 
+def _generation_context(
+    generation: object,
+    *,
+    default_workflow: str,
+) -> dict[str, Any] | None:
+    if not isinstance(generation, dict):
+        return None
+    return {
+        "workflow": generation.get("workflow", default_workflow),
+        "adapter": generation.get("adapter"),
+        "reference_images": copy.deepcopy(generation.get("reference_images", [])),
+    }
+
+
 def _prompt_payload(source_document: dict[str, Any]) -> dict[str, Any]:
     raw_shots = source_document.get("shots")
     if not isinstance(raw_shots, list):
@@ -138,29 +152,39 @@ def _prompt_payload(source_document: dict[str, Any]) -> dict[str, Any]:
     for index, shot in enumerate(raw_shots, start=1):
         if not isinstance(shot, dict):
             raise ValueError(f"Scene shot {index} must be an object")
-        generation = shot.get("generate_start_image")
-        generation_prompt: str | None = None
-        generation_negative_prompt: str | None = None
-        if isinstance(generation, dict):
-            raw_prompt = generation.get("prompt")
-            generation_prompt = raw_prompt if isinstance(raw_prompt, str) else None
-            raw_negative_prompt = generation.get("negative_prompt", "")
-            generation_negative_prompt = (
-                raw_negative_prompt
-                if isinstance(raw_negative_prompt, str)
-                else None
+        payload = {
+            "name": shot.get("name"),
+            "prompt": shot.get("prompt", ""),
+            "camera": shot.get("camera", ""),
+            "negative_prompt": shot.get("negative_prompt", ""),
+            "end_state": shot.get("end_state", ""),
+        }
+        for role in ("start", "end"):
+            generation = shot.get(f"generate_{role}_image")
+            generation_prompt: str | None = None
+            generation_negative_prompt: str | None = None
+            if isinstance(generation, dict):
+                raw_prompt = generation.get("prompt")
+                generation_prompt = (
+                    raw_prompt if isinstance(raw_prompt, str) else None
+                )
+                raw_negative_prompt = generation.get("negative_prompt", "")
+                generation_negative_prompt = (
+                    raw_negative_prompt
+                    if isinstance(raw_negative_prompt, str)
+                    else None
+                )
+            payload[f"generate_{role}_image_prompt"] = generation_prompt
+            payload[f"generate_{role}_image_negative_prompt"] = (
+                generation_negative_prompt
             )
-        shots.append(
-            {
-                "name": shot.get("name"),
-                "prompt": shot.get("prompt", ""),
-                "camera": shot.get("camera", ""),
-                "negative_prompt": shot.get("negative_prompt", ""),
-                "end_state": shot.get("end_state", ""),
-                "generate_start_image_prompt": generation_prompt,
-                "generate_start_image_negative_prompt": generation_negative_prompt,
-            }
-        )
+            payload[f"generate_{role}_image_context"] = _generation_context(
+                generation,
+                default_workflow=(
+                    "start_image" if role == "start" else "image_edit"
+                ),
+            )
+        shots.append(payload)
     return {
         "global_prompt": source_document.get("global_prompt", ""),
         "negative_prompt": source_document.get("negative_prompt", ""),
@@ -209,6 +233,10 @@ def _apply_overlay(
         "end_state",
         "generate_start_image_prompt",
         "generate_start_image_negative_prompt",
+        "generate_start_image_context",
+        "generate_end_image_prompt",
+        "generate_end_image_negative_prompt",
+        "generate_end_image_context",
     }
     for index, (source, refined) in enumerate(
         zip(raw_shots, refined_shots, strict=True), start=1
@@ -224,28 +252,48 @@ def _apply_overlay(
             target[field] = _required_text(
                 refined.get(field), f"shots[{index}].{field}"
             )
-        generated_prompt = refined.get("generate_start_image_prompt")
-        generated_negative_prompt = refined.get(
-            "generate_start_image_negative_prompt"
-        )
-        source_generation = source.get("generate_start_image")
-        if source_generation is None:
-            if generated_prompt is not None or generated_negative_prompt is not None:
+        for role in ("start", "end"):
+            generated_prompt = refined.get(f"generate_{role}_image_prompt")
+            generated_negative_prompt = refined.get(
+                f"generate_{role}_image_negative_prompt"
+            )
+            generated_context = refined.get(f"generate_{role}_image_context")
+            generation_field = f"generate_{role}_image"
+            source_generation = source.get(generation_field)
+            expected_context = _generation_context(
+                source_generation,
+                default_workflow=(
+                    "start_image" if role == "start" else "image_edit"
+                ),
+            )
+            if generated_context != expected_context:
                 raise ValueError(
-                    f"Prompt refiner added a generated start image to shot {index}"
+                    f"Prompt refiner changed shot {index} generated {role} image "
+                    "context"
                 )
-        else:
+            if source_generation is None:
+                if (
+                    generated_prompt is not None
+                    or generated_negative_prompt is not None
+                ):
+                    raise ValueError(
+                        f"Prompt refiner added a generated {role} image to shot "
+                        f"{index}"
+                    )
+                continue
             if not isinstance(source_generation, dict):
-                raise ValueError(f"Scene shot {index} generation must be an object")
-            target_generation = target["generate_start_image"]
+                raise ValueError(
+                    f"Scene shot {index} {role} generation must be an object"
+                )
+            target_generation = target[generation_field]
             target_generation["prompt"] = _required_text(
                 generated_prompt,
-                f"shots[{index}].generate_start_image.prompt",
+                f"shots[{index}].{generation_field}.prompt",
                 allow_empty=False,
             )
             target_generation["negative_prompt"] = _required_text(
                 generated_negative_prompt,
-                f"shots[{index}].generate_start_image.negative_prompt",
+                f"shots[{index}].{generation_field}.negative_prompt",
             )
     return document
 

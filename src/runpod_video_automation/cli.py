@@ -10,16 +10,17 @@ import time
 import webbrowser
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
 from runpod_video_automation.adapters import (
-    ResolvedStartImageGeneration,
+    ResolvedImageGeneration,
+    build_image_workflow,
     build_shot_workflow,
-    build_start_image_workflow,
     get_video_adapter,
-    resolve_start_image_generation,
+    resolve_image_generation,
 )
 from runpod_video_automation.comfy_client import ComfyClient
 from runpod_video_automation.config import ModelFile, Profile, WorkflowSelection
@@ -36,19 +37,23 @@ from runpod_video_automation.prompt_refiner.chat_ui import (
 from runpod_video_automation.prompt_refiner.client import KoboldClient
 from runpod_video_automation.remote import RemoteWorker
 from runpod_video_automation.render_metadata import (
+    build_generated_image_inputs,
     build_shot_inputs,
     build_start_image_inputs,
     fingerprint,
     read_metadata,
     sha256_file,
+    validate_generated_image_metadata,
     validate_shot_metadata,
     validate_start_image_metadata,
+    write_generated_image_metadata,
     write_render_manifest,
     write_shot_metadata,
     write_start_image_metadata,
 )
 from runpod_video_automation.runpod_client import RunPodClient
 from runpod_video_automation.scene import (
+    ImageGeneration,
     Scene,
     Shot,
     concatenate_webm,
@@ -60,6 +65,31 @@ from runpod_video_automation.workflow import apply_overrides, load_workflow
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+@dataclass
+class _ImageGenerationPlan:
+    index: int
+    shot: Shot
+    role: str
+    raw: ImageGeneration
+    selection: WorkflowSelection
+    generation: ResolvedImageGeneration
+    workflow: dict[str, Any] | None = None
+    workflow_sha256: str | None = None
+    reference_paths: tuple[Path, ...] | None = None
+    inputs: dict[str, Any] | None = None
+    image: Path | None = None
+    selected: bool = False
+    required_by_start_approval: bool = False
+
+    @property
+    def legacy_start(self) -> bool:
+        return (
+            self.role == "start"
+            and self.raw.workflow == "start_image"
+            and not self.raw.reference_images
+        )
 
 
 def _profile_path(value: str | None) -> Path:
@@ -646,7 +676,7 @@ def run(args: argparse.Namespace) -> None:
 
 def _scene_plan(
     scene: Scene,
-    generations: dict[int, ResolvedStartImageGeneration],
+    image_plans: dict[tuple[int, str], _ImageGenerationPlan],
 ) -> None:
     print(f"Scene: {scene.title}")
     print(f"Format: {scene.width}x{scene.height} at {scene.fps:g} FPS")
@@ -658,17 +688,31 @@ def _scene_plan(
         if shot.start_image:
             source = str(shot.start_image)
         elif shot.generate_start_image:
-            generation = generations.get(index)
-            if generation is None:
+            image_plan = image_plans.get((index, "start"))
+            if image_plan is None:
                 source = "generated start image (unselected shot)"
             else:
+                generation = image_plan.generation
                 source = (
                     f"generated with {generation.adapter} ({generation.checkpoint}) "
-                    f"at {generation.width}x{generation.height}"
+                    f"at {generation.width}x{generation.height}, "
+                    f"{generation.reference_count} reference(s)"
                 )
         else:
             source = "previous shot's last frame"
-        end = f", end keyframe {shot.end_image}" if shot.end_image else ""
+        if shot.end_image:
+            end = f", end keyframe {shot.end_image}"
+        elif shot.generate_end_image:
+            end_plan = image_plans.get((index, "end"))
+            if end_plan is None:
+                end = ", generated end image (unselected shot)"
+            else:
+                end = (
+                    f", generated end image with {end_plan.generation.adapter} "
+                    f"({end_plan.generation.reference_count} reference(s))"
+                )
+        else:
+            end = ""
         print(
             f"  {index:03d} {shot.name}: {shot.frames} frames, "
             f"seed {shot.seed}, start {source}{end}"
@@ -725,6 +769,260 @@ def _start_image_metadata_path(output_root: Path, index: int, name: str) -> Path
     )
 
 
+def _generated_image_dir(output_root: Path, role: str) -> Path:
+    return output_root / f"000-generated-{role}-image"
+
+
+def _generated_image_metadata_path(
+    output_root: Path, index: int, name: str, role: str
+) -> Path:
+    return _generated_image_dir(output_root, role) / (
+        f"{index:03d}-{slugify(name)}.metadata.json"
+    )
+
+
+def _build_image_generation_plans(
+    profile: Profile,
+    scene: Scene,
+    shot_entries: list[tuple[int, Shot]],
+    args: argparse.Namespace,
+) -> tuple[dict[tuple[int, str], _ImageGenerationPlan], dict[str, WorkflowSelection]]:
+    selections: dict[str, WorkflowSelection] = {}
+    plans: dict[tuple[int, str], _ImageGenerationPlan] = {}
+    roots: list[tuple[tuple[int, str], bool]] = []
+    for index, shot in shot_entries:
+        for role, raw in (
+            ("start", shot.generate_start_image),
+            ("end", shot.generate_end_image),
+        ):
+            if raw is None:
+                continue
+            if role == "end" and getattr(args, "start_image_only", False):
+                continue
+            roots.append(((index, role), role == "start"))
+
+    expanded: set[tuple[tuple[int, str], bool]] = set()
+    pending = [(key, True, approve_for_start) for key, approve_for_start in roots]
+    while pending:
+        key, selected, required_by_start_approval = pending.pop()
+        index, role = key
+        shot = scene.shots[index - 1]
+        raw = (
+            shot.generate_start_image
+            if role == "start"
+            else shot.generate_end_image
+        )
+        if raw is None:
+            raise RuntimeError(
+                f"Shot {index} has no configured generated {role} image"
+            )
+        plan = plans.get(key)
+        if plan is None:
+            selection = selections.get(raw.workflow)
+            if selection is None:
+                if raw.workflow == "start_image":
+                    selection = _workflow_selection(
+                        profile,
+                        raw.workflow,
+                        path=getattr(args, "start_image_workflow", None),
+                        adapter=getattr(args, "start_image_adapter", None),
+                        model_groups=getattr(args, "start_image_model_group", None),
+                    )
+                else:
+                    selection = profile.select_workflow(raw.workflow)
+                selections[raw.workflow] = selection
+            plan = _ImageGenerationPlan(
+                index=index,
+                shot=shot,
+                role=role,
+                raw=raw,
+                selection=selection,
+                generation=resolve_image_generation(
+                    raw, selection.adapter, selection.defaults
+                ),
+            )
+            plans[key] = plan
+        plan.selected = plan.selected or selected
+        plan.required_by_start_approval = (
+            plan.required_by_start_approval or required_by_start_approval
+        )
+
+        expansion = (key, required_by_start_approval)
+        if expansion in expanded:
+            continue
+        expanded.add(expansion)
+        for reference in raw.reference_images:
+            dependency: tuple[int, str] | None = None
+            if reference.source == "current_start" and shot.generate_start_image:
+                dependency = (index, "start")
+            elif reference.source == "shot_start":
+                referenced_index = int(reference.shot)
+                if scene.shots[referenced_index - 1].generate_start_image:
+                    dependency = (referenced_index, "start")
+            elif reference.source == "shot_end":
+                referenced_index = int(reference.shot)
+                if scene.shots[referenced_index - 1].generate_end_image:
+                    dependency = (referenced_index, "end")
+            if dependency is not None:
+                pending.append((dependency, False, required_by_start_approval))
+
+    ordered = dict(
+        sorted(plans.items(), key=lambda item: (item[0][0], item[0][1] == "end"))
+    )
+    return ordered, selections
+
+
+def _load_image_plan_workflows(
+    plans: dict[tuple[int, str], _ImageGenerationPlan],
+) -> None:
+    loaded: dict[str, tuple[dict[str, Any], str]] = {}
+    for plan in plans.values():
+        cached = loaded.get(plan.selection.name)
+        if cached is None:
+            workflow = load_workflow(plan.selection.path)
+            cached = (workflow, fingerprint(workflow))
+            loaded[plan.selection.name] = cached
+        plan.workflow, plan.workflow_sha256 = cached
+
+
+def _metadata_output_path(metadata_path: Path, output_root: Path) -> Path | None:
+    metadata = read_metadata(metadata_path)
+    output = metadata.get("output") if metadata is not None else None
+    if not isinstance(output, dict) or not isinstance(output.get("path"), str):
+        return None
+    relative_path = Path(output["path"])
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        return None
+    resolved_root = output_root.resolve()
+    path = (resolved_root / relative_path).resolve()
+    try:
+        path.relative_to(resolved_root)
+    except ValueError:
+        return None
+    expected_hash = output.get("sha256")
+    if not path.is_file() or not isinstance(expected_hash, str):
+        return None
+    return path if sha256_file(path) == expected_hash else None
+
+
+def _build_generation_inputs(
+    plan: _ImageGenerationPlan,
+    profile: Profile,
+    references: tuple[Path, ...],
+    prompt_refinement: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if plan.workflow_sha256 is None:
+        raise RuntimeError("Image workflow fingerprint is unavailable")
+    if plan.legacy_start:
+        return build_start_image_inputs(
+            plan.shot,
+            index=plan.index,
+            profile=profile,
+            generation=plan.generation,
+            start_workflow=plan.selection,
+            start_workflow_sha256=plan.workflow_sha256,
+            prompt_refinement=prompt_refinement,
+        )
+    return build_generated_image_inputs(
+        plan.shot,
+        index=plan.index,
+        role=plan.role,
+        profile=profile,
+        generation=plan.generation,
+        image_workflow=plan.selection,
+        image_workflow_sha256=plan.workflow_sha256,
+        reference_images=references,
+        prompt_refinement=prompt_refinement,
+    )
+
+
+def _validate_generation_metadata(
+    plan: _ImageGenerationPlan,
+    inputs: dict[str, Any],
+    output_root: Path,
+) -> tuple[Path | None, list[str]]:
+    metadata_path = _generated_image_metadata_path(
+        output_root, plan.index, plan.shot.name, plan.role
+    )
+    metadata = read_metadata(metadata_path)
+    if plan.legacy_start:
+        return validate_start_image_metadata(metadata, inputs, output_root)
+    return validate_generated_image_metadata(metadata, inputs, output_root)
+
+
+def _resolve_generation_references(
+    plan: _ImageGenerationPlan,
+    *,
+    scene: Scene,
+    paths: dict[tuple[int, str], Path],
+    explicit_references: dict[tuple[int, str, int], Path],
+    pending_images: set[tuple[int, str]],
+    pending_videos: set[int],
+) -> tuple[Path, ...] | None:
+    resolved: list[Path] = []
+    for position, reference in enumerate(plan.raw.reference_images, start=1):
+        dependency: tuple[int, str] | None = None
+        if reference.path is not None:
+            path = explicit_references[(plan.index, plan.role, position)]
+        elif reference.source == "current_start":
+            dependency = (plan.index, "start")
+            if dependency in pending_images:
+                return None
+            if (
+                plan.shot.start_image is None
+                and plan.shot.generate_start_image is None
+            ):
+                if plan.index - 1 in pending_videos:
+                    return None
+                path = paths.get((plan.index - 1, "continuation"))
+            else:
+                path = paths.get(dependency)
+        elif reference.source in {"shot_start", "shot_end"}:
+            dependency = (
+                int(reference.shot),
+                "start" if reference.source == "shot_start" else "end",
+            )
+            if dependency in pending_images:
+                return None
+            referenced_shot = scene.shots[dependency[0] - 1]
+            if (
+                dependency[1] == "start"
+                and referenced_shot.start_image is None
+                and referenced_shot.generate_start_image is None
+            ):
+                if dependency[0] - 1 in pending_videos:
+                    return None
+                path = paths.get((dependency[0] - 1, "continuation"))
+            else:
+                path = paths.get(dependency)
+        elif reference.source == "shot_continuation":
+            referenced_index = int(reference.shot)
+            if referenced_index in pending_videos:
+                return None
+            path = paths.get((referenced_index, "continuation"))
+            if path is not None and not path.is_file():
+                path = None
+            if path is None:
+                raise ValueError(
+                    f"Shot {plan.index} {plan.role} image reference {position} "
+                    f"requires shot {referenced_index} continuation, but it is "
+                    "unavailable"
+                )
+            resolved.append(path)
+            continue
+        else:
+            raise RuntimeError("Unknown image reference descriptor")
+
+        if path is None:
+            source = reference.source or str(reference.path)
+            raise ValueError(
+                f"Shot {plan.index} {plan.role} image reference {position} "
+                f"({source}) is unavailable"
+            )
+        resolved.append(path)
+    return tuple(resolved)
+
+
 def _print_resume_differences(index: int, differences: list[str]) -> None:
     print(f"Resume: shot {index} must be rendered again:")
     for difference in differences:
@@ -770,19 +1068,35 @@ def _backfill_scene_metadata(
     profile: Profile,
     video_selection: WorkflowSelection,
     video_output_suffix: str,
-    start_selection: WorkflowSelection | None,
-    generations: dict[int, ResolvedStartImageGeneration],
+    image_plans: dict[tuple[int, str], _ImageGenerationPlan],
+    legacy_start_selection: WorkflowSelection | None,
 ) -> None:
     if not output_root.is_dir():
         raise ValueError(f"Scene output directory not found: {output_root}")
     video_workflow_sha256 = fingerprint(load_workflow(video_selection.path))
-    start_workflow_sha256: str | None = None
-    if start_selection is not None:
-        start_workflow_sha256 = fingerprint(load_workflow(start_selection.path))
+    _load_image_plan_workflows(image_plans)
+    legacy_start_workflow_sha256 = (
+        fingerprint(load_workflow(legacy_start_selection.path))
+        if legacy_start_selection is not None
+        and not any(
+            plan.selection.name == legacy_start_selection.name
+            for plan in image_plans.values()
+        )
+        else next(
+            (
+                plan.workflow_sha256
+                for plan in image_plans.values()
+                if plan.selection.name == "start_image"
+            ),
+            None,
+        )
+    )
 
-    input_snapshots: dict[tuple[int, str], Path] = {}
-    generated_images: dict[int, Path] = {}
-    start_image_plans: list[tuple[Path, dict[str, Any], Path]] = []
+    paths: dict[tuple[int, str], Path] = {}
+    explicit_references: dict[tuple[int, str, int], Path] = {}
+    generated_image_sidecars: list[
+        tuple[_ImageGenerationPlan, Path, dict[str, Any], Path]
+    ] = []
     shot_plans: list[tuple[Path, dict[str, Any], Path, Path]] = []
     runtime = {
         "backfilled": True,
@@ -790,99 +1104,154 @@ def _backfill_scene_metadata(
         "historical_render_time_unknown": True,
     }
 
-    # Validate the complete adoption set before writing any metadata sidecars.
-    for index, shot in shot_entries:
+    for index, shot in enumerate(scene.shots, start=1):
         if shot.start_image is not None:
-            input_snapshots[(index, "start")] = _snapshot_input(
+            paths[(index, "start")] = _snapshot_input(
                 shot.start_image,
                 output_root,
                 index=index,
                 role="start",
             )
         if shot.end_image is not None:
-            input_snapshots[(index, "end")] = _snapshot_input(
+            paths[(index, "end")] = _snapshot_input(
                 shot.end_image,
                 output_root,
                 index=index,
                 role="end",
             )
-        if shot.generate_start_image is None:
-            continue
-        if start_selection is None or start_workflow_sha256 is None:
-            raise RuntimeError("Start image workflow selection is unavailable")
-        inputs = build_start_image_inputs(
-            shot,
-            index=index,
-            profile=profile,
-            generation=generations[index],
-            start_workflow=start_selection,
-            start_workflow_sha256=start_workflow_sha256,
-        )
-        metadata_path = _start_image_metadata_path(output_root, index, shot.name)
-        if metadata_path.is_file():
-            existing_image, differences = validate_start_image_metadata(
-                read_metadata(metadata_path), inputs, output_root
+        continuation = _continuation_path(output_root, index, shot.name)
+        if continuation.is_file():
+            paths[(index, "continuation")] = continuation
+        if shot.start_image is None and shot.generate_start_image is None:
+            previous = paths.get((index - 1, "continuation"))
+            if previous is not None:
+                paths[(index, "start")] = previous
+        for role, generation in (
+            ("start", shot.generate_start_image),
+            ("end", shot.generate_end_image),
+        ):
+            if generation is None or (index, role) in image_plans:
+                continue
+            existing = _metadata_output_path(
+                _generated_image_metadata_path(output_root, index, shot.name, role),
+                output_root,
             )
-            if existing_image is None or differences:
-                raise ValueError(
-                    f"Cannot backfill shot {index}: existing start image metadata "
-                    "does not match the current scene:\n  - "
-                    + "\n  - ".join(differences)
+            if existing is not None:
+                paths[(index, role)] = existing
+
+    for plan in image_plans.values():
+        for position, reference in enumerate(plan.raw.reference_images, start=1):
+            if reference.path is not None:
+                explicit_references[
+                    (plan.index, plan.role, position)
+                ] = _snapshot_input(
+                    reference.path,
+                    output_root,
+                    index=plan.index,
+                    role=f"{plan.role}-reference-{position}",
                 )
-            generated_images[index] = existing_image
-            print(f"Metadata already exists: {metadata_path}")
-            continue
-        image = _single_existing_output(
-            output_root / "000-generated-start-image",
-            prefix=f"{index:03d}-{slugify(shot.name)}_",
-            suffixes=IMAGE_SUFFIXES,
-            label=f"generated start image for shot {index}",
-        )
-        if image is None:
-            continue
-        generated_images[index] = image
-        start_image_plans.append((metadata_path, inputs, image))
+
+    # Validate the complete adoption set before writing any metadata sidecars.
+    generation_indices = sorted({index for index, _ in image_plans})
+    for index in generation_indices:
+        shot = scene.shots[index - 1]
+        if shot.generate_start_image is None and shot.start_image is None:
+            previous = paths.get((index - 1, "continuation"))
+            if previous is not None:
+                paths[(index, "start")] = previous
+        for role in ("start", "end"):
+            plan = image_plans.get((index, role))
+            if plan is None:
+                continue
+            references = _resolve_generation_references(
+                plan,
+                scene=scene,
+                paths=paths,
+                explicit_references=explicit_references,
+                pending_images=set(),
+                pending_videos=set(),
+            )
+            if references is None:
+                raise ValueError(
+                    f"Cannot backfill shot {index}: {role} image references are "
+                    "unavailable"
+                )
+            plan.reference_paths = references
+            inputs = _build_generation_inputs(plan, profile, references)
+            plan.inputs = inputs
+            metadata_path = _generated_image_metadata_path(
+                output_root, index, shot.name, role
+            )
+            if metadata_path.is_file():
+                existing_image, differences = _validate_generation_metadata(
+                    plan, inputs, output_root
+                )
+                if existing_image is None or differences:
+                    raise ValueError(
+                        f"Cannot backfill shot {index}: existing {role} image metadata "
+                        "does not match the current scene:\n  - "
+                        + "\n  - ".join(differences)
+                    )
+                plan.image = existing_image
+                paths[(index, role)] = existing_image
+                print(f"Metadata already exists: {metadata_path}")
+                continue
+            output_prefix = f"{index:03d}-{slugify(shot.name)}"
+            if role == "end":
+                output_prefix += "-end"
+            image = _single_existing_output(
+                _generated_image_dir(output_root, role),
+                prefix=output_prefix + "_",
+                suffixes=IMAGE_SUFFIXES,
+                label=f"generated {role} image for shot {index}",
+            )
+            if image is None:
+                continue
+            plan.image = image
+            paths[(index, role)] = image
+            generated_image_sidecars.append((plan, metadata_path, inputs, image))
 
     for index, shot in shot_entries:
         shot_dir = _shot_dir(output_root, index, shot.name)
         metadata_path = shot_dir / "metadata.json"
-        if metadata_path.is_file():
-            print(f"Metadata already exists: {metadata_path}")
-            continue
-        video = _single_existing_output(
-            shot_dir,
-            prefix="",
-            suffixes={video_output_suffix},
-            label=f"video for shot {index}",
-        )
+        metadata_exists = metadata_path.is_file()
         continuation = _continuation_path(output_root, index, shot.name)
-        if video is None and not continuation.is_file():
-            print(f"Backfill: no existing output for shot {index}; skipping")
-            continue
-        if video is None:
-            raise ValueError(f"Cannot backfill shot {index}: video is missing")
-        if not continuation.is_file():
-            raise ValueError(
-                f"Cannot backfill shot {index}: continuation image is missing"
+        video: Path | None = None
+        if not metadata_exists:
+            video = _single_existing_output(
+                shot_dir,
+                prefix="",
+                suffixes={video_output_suffix},
+                label=f"video for shot {index}",
             )
-        if shot.start_image is not None:
-            start_image = input_snapshots[(index, "start")]
-        elif shot.generate_start_image is not None:
-            start_image = generated_images.get(index)
+            if video is None and not continuation.is_file():
+                print(f"Backfill: no existing output for shot {index}; skipping")
+                continue
+            if video is None:
+                raise ValueError(f"Cannot backfill shot {index}: video is missing")
+            if not continuation.is_file():
+                raise ValueError(
+                    f"Cannot backfill shot {index}: continuation image is missing"
+                )
+        if shot.start_image is not None or shot.generate_start_image is not None:
+            start_image = paths.get((index, "start"))
             if start_image is None:
                 raise ValueError(
                     f"Cannot backfill shot {index}: generated start image is missing"
                 )
         else:
-            previous_index = index - 1
-            previous_shot = scene.shots[previous_index - 1]
-            start_image = _continuation_path(
-                output_root, previous_index, previous_shot.name
-            )
-            if not start_image.is_file():
+            start_image = paths.get((index - 1, "continuation"))
+            if start_image is None:
                 raise ValueError(
                     f"Cannot backfill shot {index}: previous continuation is missing"
                 )
+        start_plan = image_plans.get((index, "start"))
+        end_plan = image_plans.get((index, "end"))
+        end_image = paths.get((index, "end"))
+        if shot.generate_end_image is not None and end_image is None:
+            raise ValueError(
+                f"Cannot backfill shot {index}: generated end image is missing"
+            )
         inputs = build_shot_inputs(
             scene,
             shot,
@@ -892,17 +1261,61 @@ def _backfill_scene_metadata(
             video_workflow=video_selection,
             video_workflow_sha256=video_workflow_sha256,
             video_output_suffix=video_output_suffix,
-            start_workflow=start_selection,
-            start_workflow_sha256=start_workflow_sha256,
-            generation=generations.get(index),
+            start_workflow=(
+                start_plan.selection
+                if start_plan is not None
+                else legacy_start_selection
+            ),
+            start_workflow_sha256=(
+                start_plan.workflow_sha256
+                if start_plan is not None
+                else legacy_start_workflow_sha256
+            ),
+            generation=start_plan.generation if start_plan is not None else None,
             starting_state=(scene.shots[index - 2].end_state if index > 1 else ""),
-            end_image=input_snapshots.get((index, "end")),
+            end_image=end_image,
+            end_generation=end_plan.generation if end_plan is not None else None,
+            end_workflow=end_plan.selection if end_plan is not None else None,
+            end_workflow_sha256=(
+                end_plan.workflow_sha256 if end_plan is not None else None
+            ),
+            start_generation_fingerprint=(
+                fingerprint(start_plan.inputs)
+                if start_plan is not None
+                and not start_plan.legacy_start
+                and start_plan.inputs is not None
+                else None
+            ),
+            end_generation_fingerprint=(
+                fingerprint(end_plan.inputs)
+                if end_plan is not None and end_plan.inputs is not None
+                else None
+            ),
         )
+        if metadata_exists:
+            existing_video, differences = validate_shot_metadata(
+                read_metadata(metadata_path), inputs, output_root
+            )
+            if existing_video is None or differences:
+                raise ValueError(
+                    f"Cannot backfill shot {index}: existing shot metadata does "
+                    "not match the current scene or outputs:\n  - "
+                    + "\n  - ".join(differences)
+                )
+            print(f"Metadata already exists: {metadata_path}")
+            continue
+        if video is None:
+            raise RuntimeError("Backfill video validation did not run")
         shot_plans.append((metadata_path, inputs, video, continuation))
 
     _snapshot_scene(scene_path, output_root)
-    for metadata_path, inputs, image in start_image_plans:
-        write_start_image_metadata(
+    for plan, metadata_path, inputs, image in generated_image_sidecars:
+        writer = (
+            write_start_image_metadata
+            if plan.legacy_start
+            else write_generated_image_metadata
+        )
+        writer(
             metadata_path,
             inputs=inputs,
             image=image,
@@ -910,7 +1323,7 @@ def _backfill_scene_metadata(
             runtime=runtime,
             elapsed_seconds=0,
         )
-        print(f"Backfilled start image metadata: {metadata_path}")
+        print(f"Backfilled {plan.role} image metadata: {metadata_path}")
     for metadata_path, inputs, video, continuation in shot_plans:
         write_shot_metadata(
             metadata_path,
@@ -934,7 +1347,7 @@ def _backfill_scene_metadata(
     )
     print(
         f"Metadata backfill complete: {len(shot_plans)} shot(s), "
-        f"{len(start_image_plans)} start image(s)"
+        f"{len(generated_image_sidecars)} generated image(s)"
     )
 
 
@@ -957,6 +1370,106 @@ def _selected_shot_entries(
     return [(number, scene.shots[number - 1]) for number in selected]
 
 
+def _scene_image_modes(args: argparse.Namespace) -> tuple[bool, bool, bool, bool]:
+    start_image_only = bool(getattr(args, "start_image_only", False))
+    generated_images_only = bool(getattr(args, "generated_images_only", False))
+    approve_start_images = bool(getattr(args, "approve_start_images", False))
+    approve_generated_images = bool(
+        getattr(args, "approve_generated_images", False)
+    )
+    if start_image_only and generated_images_only:
+        raise ValueError(
+            "Use either --start-image-only or --generated-images-only, not both"
+        )
+    if start_image_only and (approve_start_images or approve_generated_images):
+        raise ValueError(
+            "--start-image-only cannot be combined with image approval flags"
+        )
+    if generated_images_only and (approve_start_images or approve_generated_images):
+        raise ValueError(
+            "--generated-images-only cannot be combined with image approval flags"
+        )
+    if approve_start_images and approve_generated_images:
+        raise ValueError(
+            "Use either --approve-start-images or --approve-generated-images"
+        )
+    return (
+        start_image_only,
+        generated_images_only,
+        approve_start_images,
+        approve_generated_images,
+    )
+
+
+def _preflight_scene_dependencies(
+    scene: Scene,
+    shot_entries: list[tuple[int, Shot]],
+    image_plans: dict[tuple[int, str], _ImageGenerationPlan],
+    args: argparse.Namespace,
+    output_root: Path,
+) -> None:
+    start_image_only, generated_images_only, _, _ = _scene_image_modes(args)
+    images_only = start_image_only or generated_images_only
+    selected_numbers = {index for index, _ in shot_entries}
+    if start_image_only and not image_plans:
+        raise ValueError(
+            "--start-image-only requires at least one generate_start_image shot"
+        )
+    if generated_images_only and not image_plans:
+        raise ValueError(
+            "--generated-images-only requires at least one configured image generation"
+        )
+
+    paths: dict[tuple[int, str], Path] = {}
+    for index, shot in enumerate(scene.shots, start=1):
+        if shot.start_image is not None:
+            paths[(index, "start")] = shot.start_image
+        if shot.end_image is not None:
+            paths[(index, "end")] = shot.end_image
+        continuation = _continuation_path(output_root, index, shot.name)
+        if continuation.is_file():
+            paths[(index, "continuation")] = continuation
+        if shot.start_image is None and shot.generate_start_image is None:
+            previous = paths.get((index - 1, "continuation"))
+            if previous is not None:
+                paths[(index, "start")] = previous
+
+    for index, shot in shot_entries:
+        if (
+            images_only
+            or shot.start_image is not None
+            or shot.generate_start_image is not None
+            or index - 1 in selected_numbers
+        ):
+            continue
+        continuation = _continuation_path(
+            output_root, index - 1, scene.shots[index - 2].name
+        )
+        if not continuation.is_file():
+            raise ValueError(
+                f"Shot {index} requires the previous continuation image, but it "
+                f"does not exist: {continuation}"
+            )
+
+    explicit_references = {
+        (plan.index, plan.role, position): reference.path
+        for plan in image_plans.values()
+        for position, reference in enumerate(plan.raw.reference_images, start=1)
+        if reference.path is not None
+    }
+    pending_videos = set() if images_only else selected_numbers
+    pending_images = set(image_plans)
+    for plan in image_plans.values():
+        _resolve_generation_references(
+            plan,
+            scene=scene,
+            paths=paths,
+            explicit_references=explicit_references,
+            pending_images=pending_images,
+            pending_videos=pending_videos,
+        )
+
+
 def render_scene(args: argparse.Namespace) -> None:
     scene_path = _scene_path(args.manifest)
     source_scene = Scene.load(scene_path)
@@ -969,6 +1482,7 @@ def render_scene(args: argparse.Namespace) -> None:
         return
     if getattr(args, "backfill_metadata", False):
         raise ValueError("--refine-prompts cannot be combined with --backfill-metadata")
+    image_modes = _scene_image_modes(args)
 
     output_root = _scene_output_root(scene_path, args.output)
     refiner_profile = PromptRefinerProfile.load(
@@ -999,8 +1513,71 @@ def render_scene(args: argparse.Namespace) -> None:
     _validate_execution_args(args)
     if args.pod_id and not args.restart:
         raise ValueError("Prompt refinement with --pod-id requires --restart")
+    if image_modes[2] or image_modes[3]:
+        raise ValueError(
+            "Generated image approval with --refine-prompts requires a matching "
+            "refinement cache; run refinement and image generation first"
+        )
+    images_only = image_modes[0] or image_modes[1]
+    if not images_only and shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg is required to assemble scene outputs")
 
     infrastructure = Profile.load(_profile_path(args.profile))
+    preflight_entries = _selected_shot_entries(source_scene, args)
+    preflight_plans, _ = _build_image_generation_plans(
+        infrastructure, source_scene, preflight_entries, args
+    )
+    _preflight_scene_dependencies(
+        source_scene,
+        preflight_entries,
+        preflight_plans,
+        args,
+        output_root,
+    )
+    _load_image_plan_workflows(preflight_plans)
+    for plan in preflight_plans.values():
+        if plan.workflow is None:
+            raise RuntimeError("Image workflow was not loaded")
+        build_image_workflow(
+            plan.selection.adapter,
+            plan.workflow,
+            plan.generation,
+            shot_number=plan.index,
+            shot_name=plan.shot.name,
+            role=plan.role,
+            reference_names=tuple(
+                f"preflight-reference-{position}.png"
+                for position in range(1, len(plan.raw.reference_images) + 1)
+            ),
+        )
+    if not images_only:
+        preflight_video = _workflow_selection(
+            infrastructure,
+            "video",
+            path=getattr(args, "workflow", None),
+            adapter=getattr(args, "video_adapter", None),
+            model_groups=getattr(args, "video_model_group", None),
+        )
+        get_video_adapter(preflight_video.adapter)
+        preflight_video_workflow = load_workflow(preflight_video.path)
+        for index, shot in preflight_entries:
+            build_shot_workflow(
+                preflight_video.adapter,
+                preflight_video_workflow,
+                source_scene,
+                shot,
+                shot_number=index,
+                start_image_name="preflight-start.png",
+                end_image_name=(
+                    "preflight-end.png"
+                    if shot.end_image is not None
+                    or shot.generate_end_image is not None
+                    else None
+                ),
+                starting_state=(
+                    source_scene.shots[index - 2].end_state if index > 1 else ""
+                ),
+            )
     with _remote_session(
         args,
         infrastructure,
@@ -1042,16 +1619,33 @@ def _render_scene_effective(
     shot_entries = _selected_shot_entries(scene, args)
     selected_numbers = {index for index, _ in shot_entries}
     all_shots_selected = len(selected_numbers) == len(scene.shots)
-    selected_start_images = any(
-        shot.generate_start_image is not None for _, shot in shot_entries
-    )
-    scene_uses_start_images = any(
-        shot.generate_start_image is not None for shot in scene.shots
-    )
     profile = Profile.load(_profile_path(args.profile))
+    (
+        start_image_only,
+        generated_images_only,
+        approve_start_images,
+        approve_generated_images,
+    ) = _scene_image_modes(args)
+    images_only = start_image_only or generated_images_only
+
+    image_plans, image_selections = _build_image_generation_plans(
+        profile, scene, shot_entries, args
+    )
+    if "start_image" not in image_selections and any(
+        shot.generate_start_image is not None
+        and shot.generate_start_image.workflow == "start_image"
+        for shot in scene.shots
+    ):
+        image_selections["start_image"] = _workflow_selection(
+            profile,
+            "start_image",
+            path=getattr(args, "start_image_workflow", None),
+            adapter=getattr(args, "start_image_adapter", None),
+            model_groups=getattr(args, "start_image_model_group", None),
+        )
     video_selection: WorkflowSelection | None = None
     video_output_suffix = ".webm"
-    if not args.start_image_only:
+    if not images_only:
         video_selection = _workflow_selection(
             profile,
             "video",
@@ -1062,24 +1656,7 @@ def _render_scene_effective(
         video_output_suffix = get_video_adapter(
             video_selection.adapter
         ).output_suffix.lower()
-    start_selection: WorkflowSelection | None = None
-    generations: dict[int, ResolvedStartImageGeneration] = {}
-    if scene_uses_start_images:
-        start_selection = _workflow_selection(
-            profile,
-            "start_image",
-            path=getattr(args, "start_image_workflow", None),
-            adapter=getattr(args, "start_image_adapter", None),
-            model_groups=getattr(args, "start_image_model_group", None),
-        )
-        for index, shot in shot_entries:
-            if shot.generate_start_image is not None:
-                generations[index] = resolve_start_image_generation(
-                    shot.generate_start_image,
-                    start_selection.adapter,
-                    start_selection.defaults,
-                )
-    _scene_plan(scene, generations)
+    _scene_plan(scene, image_plans)
     if not all_shots_selected:
         print(f"Selected shots: {', '.join(map(str, sorted(selected_numbers)))}")
     if getattr(args, "backfill_metadata", False):
@@ -1088,8 +1665,10 @@ def _render_scene_effective(
             for enabled, flag in (
                 (args.plan, "--plan"),
                 (args.apply, "--apply"),
-                (args.start_image_only, "--start-image-only"),
-                (getattr(args, "approve_start_images", False), "--approve-start-images"),
+                (start_image_only, "--start-image-only"),
+                (generated_images_only, "--generated-images-only"),
+                (approve_start_images, "--approve-start-images"),
+                (approve_generated_images, "--approve-generated-images"),
                 (getattr(args, "resume", False), "--resume"),
                 (getattr(args, "restart", False), "--restart"),
                 (bool(getattr(args, "pod_id", None)), "--pod-id"),
@@ -1117,8 +1696,8 @@ def _render_scene_effective(
             profile=profile,
             video_selection=video_selection,
             video_output_suffix=video_output_suffix,
-            start_selection=start_selection,
-            generations=generations,
+            image_plans=image_plans,
+            legacy_start_selection=image_selections.get("start_image"),
         )
         return
     if args.plan:
@@ -1128,40 +1707,75 @@ def _render_scene_effective(
     if not args.apply:
         raise RuntimeError("Refusing to create billable resources without --apply")
     _validate_execution_args(args)
-    if args.start_image_only and getattr(args, "approve_start_images", False):
-        raise ValueError("Use either --start-image-only or --approve-start-images")
     output_root = _scene_output_root(scene_path, args.output)
-    if not args.start_image_only and shutil.which("ffmpeg") is None:
+    if not images_only and shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to assemble scene outputs")
     scene_snapshot = _snapshot_scene(metadata_scene_path, output_root)
     print(f"Scene snapshot: {scene_snapshot}")
-    input_snapshots: dict[tuple[int, str], Path] = {}
-    for index, shot in shot_entries:
+    paths: dict[tuple[int, str], Path] = {}
+    for index, shot in enumerate(scene.shots, start=1):
         if shot.start_image is not None:
-            input_snapshots[(index, "start")] = _snapshot_input(
+            paths[(index, "start")] = _snapshot_input(
                 shot.start_image,
                 output_root,
                 index=index,
                 role="start",
             )
         if shot.end_image is not None:
-            input_snapshots[(index, "end")] = _snapshot_input(
+            paths[(index, "end")] = _snapshot_input(
                 shot.end_image,
                 output_root,
                 index=index,
                 role="end",
             )
+        continuation = _continuation_path(output_root, index, shot.name)
+        if continuation.is_file():
+            paths[(index, "continuation")] = continuation
+        if shot.start_image is None and shot.generate_start_image is None:
+            previous = paths.get((index - 1, "continuation"))
+            if previous is not None:
+                paths[(index, "start")] = previous
+
+    explicit_references: dict[tuple[int, str, int], Path] = {}
+    for plan in image_plans.values():
+        for position, reference in enumerate(plan.raw.reference_images, start=1):
+            if reference.path is None:
+                continue
+            explicit_references[(plan.index, plan.role, position)] = _snapshot_input(
+                reference.path,
+                output_root,
+                index=plan.index,
+                role=f"{plan.role}-reference-{position}",
+            )
+
+    # Unselected generated outputs may satisfy selected dynamic references, but
+    # selected outputs are admitted only after current metadata validation.
+    for index, shot in enumerate(scene.shots, start=1):
+        for role, generation in (
+            ("start", shot.generate_start_image),
+            ("end", shot.generate_end_image),
+        ):
+            if generation is None or (index, role) in image_plans:
+                continue
+            existing = _metadata_output_path(
+                _generated_image_metadata_path(output_root, index, shot.name, role),
+                output_root,
+            )
+            if existing is not None:
+                paths[(index, role)] = existing
+
     for index, shot in shot_entries:
-        if args.start_image_only:
-            continue
-        if shot.start_image is not None or shot.generate_start_image is not None:
+        if (
+            images_only
+            or shot.start_image is not None
+            or shot.generate_start_image is not None
+        ):
             continue
         previous_index = index - 1
         if previous_index in selected_numbers:
             continue
-        previous_shot = scene.shots[previous_index - 1]
         continuation = _continuation_path(
-            output_root, previous_index, previous_shot.name
+            output_root, previous_index, scene.shots[previous_index - 1].name
         )
         if not continuation.is_file():
             raise ValueError(
@@ -1169,173 +1783,220 @@ def _render_scene_effective(
                 f"does not exist: {continuation}"
             )
 
-    if args.start_image_only and not selected_start_images:
+    if start_image_only and not image_plans:
         raise ValueError(
             "--start-image-only requires at least one generate_start_image shot"
         )
+    if generated_images_only and not image_plans:
+        raise ValueError(
+            "--generated-images-only requires at least one configured image generation"
+        )
     base_workflow: dict[str, Any] | None = None
     video_workflow_sha256 = ""
-    if not args.start_image_only:
+    if not images_only:
         if video_selection is None:
             raise RuntimeError("Video workflow selection is unavailable")
         base_workflow = load_workflow(video_selection.path)
         video_workflow_sha256 = fingerprint(base_workflow)
-    start_image_workflow: dict[str, Any] | None = None
-    start_workflow_sha256: str | None = None
-    if scene_uses_start_images:
-        if start_selection is None:
-            raise RuntimeError("Start image workflow selection is unavailable")
-        start_image_workflow = load_workflow(start_selection.path)
-        start_workflow_sha256 = fingerprint(start_image_workflow)
+    _load_image_plan_workflows(image_plans)
+    legacy_start_selection = image_selections.get("start_image")
+    legacy_start_workflow_sha256 = next(
+        (
+            plan.workflow_sha256
+            for plan in image_plans.values()
+            if plan.selection.name == "start_image"
+        ),
+        None,
+    )
+    if (
+        legacy_start_selection is not None
+        and legacy_start_workflow_sha256 is None
+        and not images_only
+    ):
+        legacy_start_workflow_sha256 = fingerprint(
+            load_workflow(legacy_start_selection.path)
+        )
 
-    approved_images: dict[int, Path] = {}
-    for index, shot in shot_entries:
-        if shot.generate_start_image is None:
-            continue
-        if start_workflow_sha256 is None:
-            raise RuntimeError("Start image workflow fingerprint is unavailable")
-        expected_start_inputs = build_start_image_inputs(
+    pending_images: set[tuple[int, str]] = set()
+    pending_videos: set[int] = set()
+    resumed_videos: dict[int, Path] = {}
+    resume = bool(getattr(args, "resume", False))
+
+    def shot_inputs(index: int, shot: Shot) -> dict[str, Any]:
+        start_plan = image_plans.get((index, "start"))
+        end_plan = image_plans.get((index, "end"))
+        return build_shot_inputs(
+            scene,
             shot,
             index=index,
+            start_image=paths.get((index, "start")),
             profile=profile,
-            generation=generations[index],
-            start_workflow=start_selection,
-            start_workflow_sha256=start_workflow_sha256,
+            video_workflow=video_selection,
+            video_workflow_sha256=video_workflow_sha256,
+            video_output_suffix=video_output_suffix,
+            start_workflow=(
+                start_plan.selection
+                if start_plan is not None
+                else legacy_start_selection
+            ),
+            start_workflow_sha256=(
+                start_plan.workflow_sha256
+                if start_plan is not None
+                else legacy_start_workflow_sha256
+            ),
+            generation=start_plan.generation if start_plan is not None else None,
+            starting_state=(scene.shots[index - 2].end_state if index > 1 else ""),
+            end_image=paths.get((index, "end")),
+            end_generation=end_plan.generation if end_plan is not None else None,
+            end_workflow=end_plan.selection if end_plan is not None else None,
+            end_workflow_sha256=(
+                end_plan.workflow_sha256 if end_plan is not None else None
+            ),
+            start_generation_fingerprint=(
+                fingerprint(start_plan.inputs)
+                if start_plan is not None
+                and not start_plan.legacy_start
+                and start_plan.inputs is not None
+                else None
+            ),
+            end_generation_fingerprint=(
+                fingerprint(end_plan.inputs)
+                if end_plan is not None and end_plan.inputs is not None
+                else None
+            ),
             prompt_refinement=prompt_refinement,
         )
-        start_metadata = read_metadata(
-            _start_image_metadata_path(output_root, index, shot.name)
-        )
-        existing_image, start_differences = validate_start_image_metadata(
-            start_metadata,
-            expected_start_inputs,
-            output_root,
-        )
-        if getattr(args, "approve_start_images", False):
-            if existing_image is None or start_differences:
-                print(f"Start image approval rejected for shot {index}:")
-                for difference in start_differences:
-                    print(f"  - {difference}")
-                raise ValueError(
-                    f"Shot {index} start image does not match the current scene"
-                )
-            approved_images[index] = existing_image
-        elif (
-            getattr(args, "resume", False)
-            and existing_image is not None
-            and not start_differences
-        ):
-            approved_images[index] = existing_image
-            print(f"Resume: reusing generated start image {existing_image}")
-        elif getattr(args, "resume", False) and start_differences:
-            print(f"Resume: start image {index} must be generated again:")
-            for difference in start_differences:
-                print(f"  - {difference}")
 
-    resumed_videos: dict[int, Path] = {}
-    if getattr(args, "resume", False) and not args.start_image_only:
-        for index, shot in shot_entries:
-            if shot.start_image is not None:
-                expected_start_image = input_snapshots[(index, "start")]
-            elif shot.generate_start_image is not None:
-                expected_start_image = approved_images.get(index)
-            else:
-                previous_index = index - 1
-                previous_shot = scene.shots[previous_index - 1]
-                expected_start_image = _continuation_path(
-                    output_root, previous_index, previous_shot.name
-                )
-            expected_inputs = build_shot_inputs(
-                scene,
-                shot,
-                index=index,
-                start_image=expected_start_image,
-                profile=profile,
-                video_workflow=video_selection,
-                video_workflow_sha256=video_workflow_sha256,
-                video_output_suffix=video_output_suffix,
-                start_workflow=start_selection,
-                start_workflow_sha256=start_workflow_sha256,
-                generation=generations.get(index),
-                starting_state=(
-                    scene.shots[index - 2].end_state if index > 1 else ""
-                ),
-                end_image=input_snapshots.get((index, "end")),
-                prompt_refinement=prompt_refinement,
-            )
-            metadata_path = _shot_dir(output_root, index, shot.name) / "metadata.json"
-            metadata = read_metadata(metadata_path)
-            if shot.generate_start_image is None and metadata is not None:
-                saved_inputs = metadata.get("inputs")
-                saved_runtime = (
-                    saved_inputs.get("runtime")
-                    if isinstance(saved_inputs, dict)
-                    else None
-                )
-                expected_runtime = expected_inputs.get("runtime")
-                if isinstance(saved_runtime, dict) and isinstance(
-                    expected_runtime, dict
-                ):
-                    # Schema v2 initially made this irrelevant field depend on
-                    # whether a generated-image shot was selected in the same run.
-                    expected_runtime["start_image_workflow"] = saved_runtime.get(
-                        "start_image_workflow"
-                    )
-            existing_video, differences = validate_shot_metadata(
-                metadata,
-                expected_inputs,
-                output_root,
-            )
-            if (
-                existing_video is not None
-                and differences
-                and all(
-                    difference.startswith("outputs.continuation: missing file")
-                    for difference in differences
-                )
-            ):
-                continuation = _continuation_path(output_root, index, shot.name)
-                extract_last_frame(existing_video, continuation)
-                print(f"Recovered continuation frame: {continuation}")
-                existing_video, differences = validate_shot_metadata(
-                    metadata,
-                    expected_inputs,
-                    output_root,
-                )
-            depends_on_previous = (
-                shot.start_image is None and shot.generate_start_image is None
-            )
-            if (
-                depends_on_previous
-                and index - 1 in selected_numbers
-                and index - 1 not in resumed_videos
-            ):
-                differences.append(
-                    f"dependency: shot {index - 1} is being rendered again"
-                )
-            if existing_video is None or differences:
-                _print_resume_differences(index, differences)
+    operation_indices = sorted(
+        selected_numbers | {index for index, _ in image_plans}
+    )
+    for index in operation_indices:
+        shot = scene.shots[index - 1]
+        if shot.generate_start_image is None and shot.start_image is None:
+            previous = paths.get((index - 1, "continuation"))
+            if previous is not None:
+                paths[(index, "start")] = previous
+        for role in ("start", "end"):
+            plan = image_plans.get((index, role))
+            if plan is None:
                 continue
-            resumed_videos[index] = existing_video
-            print(f"Resume: shot {index}/{len(scene.shots)} metadata matches")
-
-    if args.start_image_only:
-        pending_entries = [
-            (index, shot)
-            for index, shot in shot_entries
-            if shot.generate_start_image is not None and index not in approved_images
-        ]
-    else:
-        pending_entries = [
-            (index, shot)
-            for index, shot in shot_entries
-            if index not in resumed_videos
-        ]
-    if not pending_entries:
-        if args.start_image_only:
-            print(
-                f"Resume complete: {len(approved_images)} generated start image(s) ready"
+            references = _resolve_generation_references(
+                plan,
+                scene=scene,
+                paths=paths,
+                explicit_references=explicit_references,
+                pending_images=pending_images,
+                pending_videos=pending_videos,
             )
+            must_approve = approve_generated_images or (
+                approve_start_images and plan.required_by_start_approval
+            )
+            if references is None:
+                if must_approve:
+                    raise ValueError(
+                        f"Shot {index} {role} image cannot be approved because a "
+                        "reference-producing operation is pending"
+                    )
+                pending_images.add((index, role))
+                continue
+            plan.reference_paths = references
+            plan.inputs = _build_generation_inputs(
+                plan, profile, references, prompt_refinement
+            )
+            existing_image, differences = _validate_generation_metadata(
+                plan, plan.inputs, output_root
+            )
+            if must_approve:
+                if existing_image is None or differences:
+                    print(f"Generated image approval rejected for shot {index} {role}:")
+                    for difference in differences:
+                        print(f"  - {difference}")
+                    raise ValueError(
+                        f"Shot {index} {role} image does not match the current scene"
+                    )
+                plan.image = existing_image
+                paths[(index, role)] = existing_image
+            elif resume and existing_image is not None and not differences:
+                plan.image = existing_image
+                paths[(index, role)] = existing_image
+                print(f"Resume: reusing generated {role} image {existing_image}")
+            else:
+                if resume and differences:
+                    print(f"Resume: {role} image {index} must be generated again:")
+                    for difference in differences:
+                        print(f"  - {difference}")
+                pending_images.add((index, role))
+
+        if images_only or index not in selected_numbers:
+            continue
+        image_dependency_pending = any(
+            (index, role) in pending_images for role in ("start", "end")
+        )
+        previous_dependency_pending = (
+            shot.start_image is None
+            and shot.generate_start_image is None
+            and index - 1 in pending_videos
+        )
+        if not resume or image_dependency_pending or previous_dependency_pending:
+            if resume and previous_dependency_pending:
+                _print_resume_differences(
+                    index,
+                    [f"dependency: shot {index - 1} is being rendered again"],
+                )
+            paths.pop((index, "continuation"), None)
+            pending_videos.add(index)
+            continue
+        expected_inputs = shot_inputs(index, shot)
+        metadata_path = _shot_dir(output_root, index, shot.name) / "metadata.json"
+        metadata = read_metadata(metadata_path)
+        if shot.generate_start_image is None and metadata is not None:
+            saved_inputs = metadata.get("inputs")
+            saved_runtime = (
+                saved_inputs.get("runtime") if isinstance(saved_inputs, dict) else None
+            )
+            expected_runtime = expected_inputs.get("runtime")
+            if isinstance(saved_runtime, dict) and isinstance(expected_runtime, dict):
+                expected_runtime["start_image_workflow"] = saved_runtime.get(
+                    "start_image_workflow"
+                )
+        existing_video, differences = validate_shot_metadata(
+            metadata, expected_inputs, output_root
+        )
+        if (
+            existing_video is not None
+            and differences
+            and all(
+                difference.startswith("outputs.continuation: missing file")
+                for difference in differences
+            )
+        ):
+            continuation = _continuation_path(output_root, index, shot.name)
+            extract_last_frame(existing_video, continuation)
+            print(f"Recovered continuation frame: {continuation}")
+            existing_video, differences = validate_shot_metadata(
+                metadata, expected_inputs, output_root
+            )
+        if existing_video is None or differences:
+            _print_resume_differences(index, differences)
+            paths.pop((index, "continuation"), None)
+            pending_videos.add(index)
+            continue
+        resumed_videos[index] = existing_video
+        continuation = _continuation_path(output_root, index, shot.name)
+        paths[(index, "continuation")] = continuation
+        print(f"Resume: shot {index}/{len(scene.shots)} metadata matches")
+
+    if approve_generated_images:
+        missing_approvals = [
+            key for key in image_plans if image_plans[key].image is None
+        ]
+        if missing_approvals:
+            index, role = missing_approvals[0]
+            raise ValueError(f"Shot {index} {role} image is not approved")
+
+    if not pending_images and not pending_videos:
+        if images_only:
+            print(f"Resume complete: {len(image_plans)} generated image(s) ready")
             write_render_manifest(
                 output_root,
                 metadata_scene_path,
@@ -1368,19 +2029,14 @@ def _render_scene_effective(
             print(f"Resume complete: {len(ordered_videos)} selected shot(s) ready")
         return
 
-    generates_start_images = any(
-        shot.generate_start_image is not None and index not in approved_images
-        for index, shot in pending_entries
-    )
     required_groups: list[str] = []
-    if not args.start_image_only:
+    if pending_videos:
         if video_selection is None:
             raise RuntimeError("Video workflow selection is unavailable")
         required_groups.extend(video_selection.model_groups)
-    if generates_start_images:
-        if start_selection is None:
-            raise RuntimeError("Start image workflow selection is unavailable")
-        required_groups.extend(start_selection.model_groups)
+    for key, plan in image_plans.items():
+        if key in pending_images:
+            required_groups.extend(plan.selection.model_groups)
     required_models = profile.models_for_groups(required_groups)
     rendered_videos = dict(resumed_videos)
     generated_image_count = 0
@@ -1396,39 +2052,75 @@ def _render_scene_effective(
         )
     )
     with session as comfy:
-        for index, shot in pending_entries:
-            if args.start_image_only and shot.generate_start_image is None:
-                continue
+        for index in operation_indices:
+            shot = scene.shots[index - 1]
             shot_started = time.monotonic()
-            print(f"Rendering shot {index}/{len(scene.shots)}: {shot.name}")
-            start_image = input_snapshots.get((index, "start"))
-            if index in approved_images:
-                start_image = approved_images[index]
-                print(f"Approved start keyframe: {start_image}")
-            elif shot.generate_start_image:
-                if start_image_workflow is None:
-                    raise RuntimeError("Start image workflow was not loaded")
-                print(f"Generating start keyframe for shot {index}: {shot.name}")
+            if shot.generate_start_image is None and shot.start_image is None:
+                previous = paths.get((index - 1, "continuation"))
+                if previous is not None:
+                    paths[(index, "start")] = previous
+            for role in ("start", "end"):
+                key = (index, role)
+                plan = image_plans.get(key)
+                if plan is None or key not in pending_images:
+                    continue
+                references = _resolve_generation_references(
+                    plan,
+                    scene=scene,
+                    paths=paths,
+                    explicit_references=explicit_references,
+                    pending_images=set(),
+                    pending_videos=set(),
+                )
+                if references is None:
+                    raise RuntimeError(
+                        f"Shot {index} {role} image references are still pending"
+                    )
+                plan.reference_paths = references
+                plan.inputs = _build_generation_inputs(
+                    plan, profile, references, prompt_refinement
+                )
+                reference_names: list[str] = []
+                for position, reference_path in enumerate(references, start=1):
+                    remote_name = (
+                        f"scene-{index:03d}-{role}-reference-{position:03d}"
+                        f"{reference_path.suffix.lower() or '.png'}"
+                    )
+                    uploaded = _retry_operation(
+                        f"{role.capitalize()} image reference {position} upload "
+                        f"for shot {index}",
+                        getattr(args, "retries", 2),
+                        lambda path=reference_path, name=remote_name: (
+                            comfy.upload_image(path, name)
+                        ),
+                    )
+                    reference_names.append(uploaded)
+                if plan.workflow is None:
+                    raise RuntimeError("Image workflow was not loaded")
+                print(f"Generating {role} keyframe for shot {index}: {shot.name}")
                 generation_started = time.monotonic()
-                generation_workflow = build_start_image_workflow(
-                    start_selection.adapter,
-                    start_image_workflow,
-                    generations[index],
+                generation_workflow = build_image_workflow(
+                    plan.selection.adapter,
+                    plan.workflow,
+                    plan.generation,
                     shot_number=index,
                     shot_name=shot.name,
+                    role=role,
+                    reference_names=reference_names,
                 )
                 _, generation_history = _queue_with_retries(
                     comfy,
                     generation_workflow,
                     args,
-                    lambda message, shot_index=index: print(
-                        f"[start image {shot_index}/{len(scene.shots)}] {message}",
+                    lambda message, shot_index=index, image_role=role: print(
+                        f"[{image_role} image {shot_index}/{len(scene.shots)}] "
+                        f"{message}",
                         flush=True,
                     ),
                 )
-                generated_dir = output_root / "000-generated-start-image"
+                generated_dir = _generated_image_dir(output_root, role)
                 generated_outputs = _retry_operation(
-                    "Start image download",
+                    f"{role.capitalize()} image download",
                     getattr(args, "retries", 2),
                     lambda: comfy.download_outputs(
                         generation_history,
@@ -1442,27 +2134,26 @@ def _render_scene_effective(
                 ]
                 if len(generated_images) != 1:
                     raise RuntimeError(
-                        f"Start image generation for {shot.name!r} produced "
+                        f"{role.capitalize()} image generation for {shot.name!r} "
+                        "produced "
                         f"{len(generated_images)} images; expected 1"
                     )
-                start_image = generated_images[0]
+                plan.image = generated_images[0]
+                paths[key] = plan.image
                 generated_image_count += 1
-                print(f"Generated start keyframe: {start_image}")
-                if start_workflow_sha256 is None:
-                    raise RuntimeError("Start image workflow fingerprint is unavailable")
-                start_inputs = build_start_image_inputs(
-                    shot,
-                    index=index,
-                    profile=profile,
-                    generation=generations[index],
-                    start_workflow=start_selection,
-                    start_workflow_sha256=start_workflow_sha256,
-                    prompt_refinement=prompt_refinement,
+                print(f"Generated {role} keyframe: {plan.image}")
+                metadata_path = _generated_image_metadata_path(
+                    output_root, index, shot.name, role
                 )
-                write_start_image_metadata(
-                    _start_image_metadata_path(output_root, index, shot.name),
-                    inputs=start_inputs,
-                    image=start_image,
+                writer = (
+                    write_start_image_metadata
+                    if plan.legacy_start
+                    else write_generated_image_metadata
+                )
+                writer(
+                    metadata_path,
+                    inputs=plan.inputs,
+                    image=plan.image,
                     output_root=output_root,
                     runtime=getattr(comfy, "runtime_metadata", {}),
                     elapsed_seconds=time.monotonic() - generation_started,
@@ -1474,35 +2165,22 @@ def _render_scene_effective(
                     selected_shots=sorted(selected_numbers),
                     prompt_refinement=prompt_refinement,
                 )
-            if args.start_image_only:
+            if images_only or index not in pending_videos:
                 continue
+            print(f"Rendering shot {index}/{len(scene.shots)}: {shot.name}")
+            start_image = paths.get((index, "start"))
             if start_image is None:
                 previous_index = index - 1
-                previous_shot = scene.shots[previous_index - 1]
                 start_image = _continuation_path(
-                    output_root, previous_index, previous_shot.name
+                    output_root, previous_index, scene.shots[previous_index - 1].name
                 )
+                paths[(index, "start")] = start_image
             if start_image is None:
                 raise RuntimeError(f"Shot {shot.name!r} has no available start image")
-            shot_inputs = build_shot_inputs(
-                scene,
-                shot,
-                index=index,
-                start_image=start_image,
-                profile=profile,
-                video_workflow=video_selection,
-                video_workflow_sha256=video_workflow_sha256,
-                video_output_suffix=video_output_suffix,
-                start_workflow=start_selection,
-                start_workflow_sha256=start_workflow_sha256,
-                generation=generations.get(index),
-                starting_state=(
-                    scene.shots[index - 2].end_state if index > 1 else ""
-                ),
-                end_image=input_snapshots.get((index, "end")),
-                prompt_refinement=prompt_refinement,
+            current_shot_inputs = shot_inputs(index, shot)
+            start_remote = (
+                f"scene-{index:03d}-start{start_image.suffix.lower() or '.png'}"
             )
-            start_remote = f"scene-{index:03d}-start{start_image.suffix.lower() or '.png'}"
             start_remote = _retry_operation(
                 f"Start keyframe upload for shot {index}",
                 getattr(args, "retries", 2),
@@ -1511,9 +2189,11 @@ def _render_scene_effective(
             print(f"Uploaded start keyframe: {start_remote}")
 
             end_remote: str | None = None
-            if shot.end_image:
-                end_image = input_snapshots[(index, "end")]
-                end_remote = f"scene-{index:03d}-end{end_image.suffix.lower() or '.png'}"
+            end_image = paths.get((index, "end"))
+            if end_image is not None:
+                end_remote = (
+                    f"scene-{index:03d}-end{end_image.suffix.lower() or '.png'}"
+                )
                 end_remote = _retry_operation(
                     f"End keyframe upload for shot {index}",
                     getattr(args, "retries", 2),
@@ -1564,13 +2244,14 @@ def _render_scene_effective(
 
             continuation = shot_dir / "continuation.png"
             extract_last_frame(video_outputs[0], continuation)
+            paths[(index, "continuation")] = continuation
             print(f"Extracted continuation frame: {continuation}")
             _prune_old_shot_videos(
                 shot_dir, video_outputs[0], video_output_suffix
             )
             write_shot_metadata(
                 shot_dir / "metadata.json",
-                inputs=shot_inputs,
+                inputs=current_shot_inputs,
                 video=video_outputs[0],
                 continuation=continuation,
                 output_root=output_root,
@@ -1585,7 +2266,7 @@ def _render_scene_effective(
                 prompt_refinement=prompt_refinement,
             )
 
-    if args.start_image_only:
+    if images_only:
         write_render_manifest(
             output_root,
             metadata_scene_path,
@@ -1593,7 +2274,8 @@ def _render_scene_effective(
             selected_shots=sorted(selected_numbers),
             prompt_refinement=prompt_refinement,
         )
-        print(f"Generated {generated_image_count} start keyframe(s) in {output_root}")
+        label = "start keyframe" if start_image_only else "generated image"
+        print(f"Generated {generated_image_count} {label}(s) in {output_root}")
         return
     if not all_shots_selected:
         ordered = [rendered_videos[index] for index, _ in shot_entries]
@@ -1842,14 +2524,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate configured start images without rendering video shots",
     )
     scene_parser.add_argument(
+        "--generated-images-only",
+        action="store_true",
+        help="Generate configured start and end images without rendering video shots",
+    )
+    scene_parser.add_argument(
         "--approve-start-images",
         action="store_true",
         help="Use previously generated start images without regenerating them",
     )
     scene_parser.add_argument(
+        "--approve-generated-images",
+        action="store_true",
+        help="Require and use matching generated start and end images",
+    )
+    scene_parser.add_argument(
         "--resume",
         action="store_true",
-        help="Reuse valid completed shots and generated start images",
+        help="Reuse valid completed shots and generated images",
     )
     scene_parser.add_argument(
         "--backfill-metadata",

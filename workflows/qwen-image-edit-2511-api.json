@@ -1,0 +1,206 @@
+{
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "generated/qwen-image-edit",
+      "images": [
+        "158",
+        0
+      ]
+    }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "reference-1.png"
+    }
+  },
+  "83": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "reference-2.png"
+    }
+  },
+  "84": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "reference-3.png"
+    }
+  },
+  "145": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "shift": 3.1,
+      "model": [
+        "161",
+        0
+      ]
+    }
+  },
+  "146": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "147": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "149",
+        0
+      ]
+    }
+  },
+  "148": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "151",
+        0
+      ]
+    }
+  },
+  "149": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "162",
+        0
+      ],
+      "vae": [
+        "146",
+        0
+      ],
+      "image1": [
+        "160",
+        0
+      ],
+      "image2": [
+        "83",
+        0
+      ],
+      "image3": [
+        "84",
+        0
+      ]
+    }
+  },
+  "151": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "prompt": "Edit the primary image while preserving its composition",
+      "clip": [
+        "162",
+        0
+      ],
+      "vae": [
+        "146",
+        0
+      ],
+      "image1": [
+        "160",
+        0
+      ],
+      "image2": [
+        "83",
+        0
+      ],
+      "image3": [
+        "84",
+        0
+      ]
+    }
+  },
+  "152": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "strength": 1.0,
+      "pre_cfg": false,
+      "model": [
+        "145",
+        0
+      ]
+    }
+  },
+  "156": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "160",
+        0
+      ],
+      "vae": [
+        "146",
+        0
+      ]
+    }
+  },
+  "158": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "169",
+        0
+      ],
+      "vae": [
+        "146",
+        0
+      ]
+    }
+  },
+  "160": {
+    "class_type": "FluxKontextImageScale",
+    "inputs": {
+      "image": [
+        "41",
+        0
+      ]
+    }
+  },
+  "161": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "162": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "169": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 40,
+      "cfg": 4.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": [
+        "152",
+        0
+      ],
+      "positive": [
+        "148",
+        0
+      ],
+      "negative": [
+        "147",
+        0
+      ],
+      "latent_image": [
+        "156",
+        0
+      ]
+    }
+  }
+}

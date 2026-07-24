@@ -6,7 +6,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from runpod_video_automation.adapters import ResolvedStartImageGeneration
+from runpod_video_automation.adapters import (
+    ResolvedImageGeneration,
+    ResolvedStartImageGeneration,
+)
 from runpod_video_automation.config import ModelFile, Profile, WorkflowSelection
 from runpod_video_automation.scene import Scene, Shot, slugify
 
@@ -85,6 +88,11 @@ def build_shot_inputs(
     generation: ResolvedStartImageGeneration | None = None,
     starting_state: str = "",
     end_image: Path | None = None,
+    end_generation: ResolvedImageGeneration | None = None,
+    end_workflow: WorkflowSelection | None = None,
+    end_workflow_sha256: str | None = None,
+    start_generation_fingerprint: str | None = None,
+    end_generation_fingerprint: str | None = None,
     prompt_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     positive_parts = [scene.global_prompt]
@@ -104,6 +112,51 @@ def build_shot_inputs(
         start_source = "generate_start_image"
     else:
         start_source = "previous_continuation"
+    generation_metadata = None
+    if generation is not None:
+        generation_metadata = (
+            generation.legacy_metadata()
+            if start_generation_fingerprint is None
+            else generation.metadata()
+        )
+    conditioning = {
+        "start_source": start_source,
+        "start_image": _asset(start_image),
+        "end_image": _asset(end_image if end_image is not None else shot.end_image),
+        "generation": generation_metadata,
+    }
+    if end_generation is not None:
+        conditioning["end_generation"] = end_generation.metadata()
+    if start_generation_fingerprint is not None:
+        conditioning["start_generation_fingerprint"] = start_generation_fingerprint
+    if end_generation_fingerprint is not None:
+        conditioning["end_generation_fingerprint"] = end_generation_fingerprint
+
+    runtime = {
+        "container_image": profile.image,
+        "comfy_args": list(profile.comfy_args),
+        "video_workflow": _workflow(
+            video_workflow,
+            video_workflow_sha256,
+            output_suffix=video_output_suffix,
+        ),
+        "start_image_workflow": (
+            _workflow(start_workflow, start_workflow_sha256)
+            if start_workflow is not None and start_workflow_sha256 is not None
+            else None
+        ),
+        "model_path_aliases": [
+            {"source": alias.source, "target": alias.target}
+            for alias in profile.model_path_aliases
+        ],
+    }
+    if end_workflow is not None and end_workflow_sha256 is not None:
+        runtime["end_image_workflow"] = _workflow(
+            end_workflow, end_workflow_sha256
+        )
+    if prompt_refinement is not None:
+        runtime["prompt_refinement"] = prompt_refinement
+
     return {
         "shot": {"index": index, "name": shot.name},
         "prompts": {
@@ -128,26 +181,48 @@ def build_shot_inputs(
             "frames": shot.frames,
             "duration_seconds": shot.duration_seconds,
         },
-        "conditioning": {
-            "start_source": start_source,
-            "start_image": _asset(start_image),
-            "end_image": _asset(end_image if end_image is not None else shot.end_image),
-            "generation": (
-                generation.metadata() if generation is not None else None
-            ),
-        },
+        "conditioning": conditioning,
+        "runtime": runtime,
+    }
+
+
+def build_generated_image_inputs(
+    shot: Shot,
+    *,
+    index: int,
+    role: str,
+    profile: Profile,
+    generation: ResolvedImageGeneration,
+    image_workflow: WorkflowSelection,
+    image_workflow_sha256: str,
+    reference_images: tuple[Path, ...],
+    prompt_refinement: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if role not in {"start", "end"}:
+        raise ValueError("Generated image role must be 'start' or 'end'")
+    configured_generation = (
+        shot.generate_start_image if role == "start" else shot.generate_end_image
+    )
+    if configured_generation is None:
+        raise ValueError(f"Shot {index} does not configure {role} image generation")
+
+    references = []
+    for path in reference_images:
+        asset = _asset(path)
+        if asset is None:
+            raise ValueError(f"Reference image not found: {path}")
+        references.append(asset)
+
+    return {
+        "shot": {"index": index, "name": shot.name},
+        "role": role,
+        "generation": generation.metadata(),
+        "references": references,
         "runtime": {
             "container_image": profile.image,
             "comfy_args": list(profile.comfy_args),
-            "video_workflow": _workflow(
-                video_workflow,
-                video_workflow_sha256,
-                output_suffix=video_output_suffix,
-            ),
-            "start_image_workflow": (
-                _workflow(start_workflow, start_workflow_sha256)
-                if start_workflow is not None and start_workflow_sha256 is not None
-                else None
+            "image_workflow": _workflow(
+                image_workflow, image_workflow_sha256
             ),
             "model_path_aliases": [
                 {"source": alias.source, "target": alias.target}
@@ -176,7 +251,7 @@ def build_start_image_inputs(
         raise ValueError(f"Shot {index} does not configure start image generation")
     return {
         "shot": {"index": index, "name": shot.name},
-        "generation": generation.metadata(),
+        "generation": generation.legacy_metadata(),
         "runtime": {
             "container_image": profile.image,
             "comfy_args": list(profile.comfy_args),
@@ -237,7 +312,7 @@ def write_shot_metadata(
     return value
 
 
-def write_start_image_metadata(
+def write_generated_image_metadata(
     path: Path,
     *,
     inputs: dict[str, Any],
@@ -262,6 +337,25 @@ def write_start_image_metadata(
     }
     _atomic_write_json(path, value)
     return value
+
+
+def write_start_image_metadata(
+    path: Path,
+    *,
+    inputs: dict[str, Any],
+    image: Path,
+    output_root: Path,
+    runtime: dict[str, Any],
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    return write_generated_image_metadata(
+        path,
+        inputs=inputs,
+        image=image,
+        output_root=output_root,
+        runtime=runtime,
+        elapsed_seconds=elapsed_seconds,
+    )
 
 
 def read_metadata(path: Path) -> dict[str, Any] | None:
@@ -297,6 +391,29 @@ def validate_shot_metadata(
     return video, differences
 
 
+def validate_generated_image_metadata(
+    metadata: dict[str, Any] | None,
+    expected_inputs: dict[str, Any],
+    output_root: Path,
+) -> tuple[Path | None, list[str]]:
+    if metadata is None:
+        return None, ["generated image metadata: missing or invalid"]
+    differences = diff_values(metadata.get("inputs"), expected_inputs, "inputs")
+    if metadata.get("schema_version") != SCHEMA_VERSION:
+        differences.append(
+            f"schema_version: {metadata.get('schema_version')!r} -> {SCHEMA_VERSION!r}"
+        )
+    if metadata.get("fingerprint") != fingerprint(expected_inputs):
+        if not differences:
+            differences.append("fingerprint: does not match generated image inputs")
+    role = expected_inputs.get("role")
+    output_label = f"{role}_image" if role in {"start", "end"} else "generated_image"
+    image = _validate_output(
+        metadata.get("output"), output_root, output_label, differences
+    )
+    return image, differences
+
+
 def validate_start_image_metadata(
     metadata: dict[str, Any] | None,
     expected_inputs: dict[str, Any],
@@ -327,7 +444,36 @@ def _validate_output(
     if not isinstance(value, dict) or not isinstance(value.get("path"), str):
         differences.append(f"outputs.{label}: missing metadata")
         return None
-    path = output_root / value["path"]
+    relative_path = Path(value["path"])
+    if relative_path.is_absolute():
+        differences.append(
+            f"outputs.{label}.path: absolute paths are not allowed: "
+            f"{value['path']!r}"
+        )
+        return None
+
+    depth = 0
+    for part in relative_path.parts:
+        if part == "..":
+            if depth == 0:
+                differences.append(
+                    f"outputs.{label}.path: traversal escapes output_root: "
+                    f"{value['path']!r}"
+                )
+                return None
+            depth -= 1
+        elif part != ".":
+            depth += 1
+
+    path = output_root / relative_path
+    resolved_root = output_root.resolve()
+    resolved_path = path.resolve()
+    if not resolved_path.is_relative_to(resolved_root):
+        differences.append(
+            f"outputs.{label}.path: resolves outside output_root: "
+            f"{value['path']!r}"
+        )
+        return None
     if not path.is_file():
         differences.append(f"outputs.{label}: missing file {path}")
         return None
@@ -380,12 +526,35 @@ def write_render_manifest(
         metadata = read_metadata(metadata_path)
         if metadata is not None:
             shots.append(metadata)
-    start_images = []
-    generated_dir = output_root / "000-generated-start-image"
-    for metadata_path in sorted(generated_dir.glob("*.metadata.json")):
-        metadata = read_metadata(metadata_path)
-        if metadata is not None:
-            start_images.append(metadata)
+    generated_images: dict[str, list[dict[str, Any]]] = {
+        "start": [],
+        "end": [],
+    }
+    for index, shot in enumerate(scene.shots, start=1):
+        for role, configured_generation in (
+            ("start", shot.generate_start_image),
+            ("end", shot.generate_end_image),
+        ):
+            if configured_generation is None:
+                continue
+            metadata_path = (
+                output_root
+                / f"000-generated-{role}-image"
+                / f"{index:03d}-{slugify(shot.name)}.metadata.json"
+            )
+            metadata = read_metadata(metadata_path)
+            inputs = metadata.get("inputs") if metadata is not None else None
+            metadata_shot = inputs.get("shot") if isinstance(inputs, dict) else None
+            metadata_role = inputs.get("role") if isinstance(inputs, dict) else None
+            if (
+                metadata is not None
+                and metadata_shot == {"index": index, "name": shot.name}
+                and (
+                    metadata_role == role
+                    or (role == "start" and metadata_role is None)
+                )
+            ):
+                generated_images[role].append(metadata)
     value = {
         "schema_version": SCHEMA_VERSION,
         "updated_at": datetime.now(UTC).isoformat(),
@@ -409,7 +578,8 @@ def write_render_manifest(
             ),
         },
         "selected_shots": selected_shots,
-        "start_images": start_images,
+        "start_images": generated_images["start"],
+        "end_images": generated_images["end"],
         "shots": shots,
         "final_video": (
             {

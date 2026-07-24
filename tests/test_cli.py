@@ -218,6 +218,11 @@ def test_scene_refinement_reuses_same_remote_session_for_render(
     monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: RefinerProfile())
     monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: None)
     monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    workflow = {
+        node: {"class_type": "Test", "inputs": {}}
+        for node in ("3", "4", "5", "6", "7", "9", "47", "50", "52", "57", "58")
+    }
+    monkeypatch.setattr(cli, "load_workflow", lambda path: workflow)
     monkeypatch.setattr(cli, "_remote_session", fake_remote_session)
     monkeypatch.setattr(cli, "_refine_with_remote", fake_refine_with_remote)
     monkeypatch.setattr(cli, "_render_scene_effective", fake_render)
@@ -264,6 +269,132 @@ def test_scene_refinement_requires_restart_for_existing_pod(
     )
 
     with pytest.raises(ValueError, match="requires --restart"):
+        cli.render_scene(args)
+
+
+def test_scene_refinement_cache_miss_rejects_approval_before_pod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Approval",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {
+                        "name": "Opening",
+                        "prompt": "Walks",
+                        "generate_start_image": {"prompt": "Adult character"},
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: object())
+    monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_remote_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Invalid approval must not start a Pod")
+        ),
+    )
+    args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--apply",
+            "--refine-prompts",
+            "--approve-start-images",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires a matching refinement cache"):
+        cli.render_scene(args)
+
+
+def test_scene_refinement_cache_miss_checks_continuation_before_pod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"start")
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Continuation",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {"name": "Opening", "prompt": "Walks", "start_image": "start.png"},
+                    {"name": "Follow Up", "prompt": "Turns"},
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: object())
+    monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: None)
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        cli,
+        "_remote_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Missing continuation must not start a Pod")
+        ),
+    )
+    args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--apply",
+            "--refine-prompts",
+            "--shot",
+            "2",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="previous continuation image"):
+        cli.render_scene(args)
+
+
+def test_scene_refinement_cache_miss_checks_workflow_before_pod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"start")
+    manifest = tmp_path / "scene.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Workflow",
+                "global_prompt": "Adult character",
+                "shots": [
+                    {"name": "Opening", "prompt": "Walks", "start_image": "start.png"}
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: object())
+    monkeypatch.setattr(cli, "load_cached_refinement", lambda **kwargs: None)
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(cli, "load_workflow", lambda path: {})
+    monkeypatch.setattr(
+        cli,
+        "_remote_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Invalid workflow must not start a Pod")
+        ),
+    )
+    args = build_parser().parse_args(
+        ["scene", str(manifest), "--apply", "--refine-prompts"]
+    )
+
+    with pytest.raises(ValueError, match="requires node 6"):
         cli.render_scene(args)
 
 
@@ -554,6 +685,90 @@ def test_metadata_backfill_validates_all_shots_before_writing_sidecars(
 
     assert not (first / "metadata.json").exists()
     assert not (output_root / "scene.snapshot.json").exists()
+
+
+def test_metadata_backfill_rejects_stale_existing_metadata_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"start")
+    manifest = tmp_path / "scene.json"
+    scene = {
+        "title": "Complete Set",
+        "global_prompt": "Adult character",
+        "shots": [
+            {"name": "One", "prompt": "A", "start_image": "start.png"},
+            {"name": "Two", "prompt": "B"},
+        ],
+    }
+    manifest.write_text(json.dumps(scene))
+    output_root = tmp_path / "output"
+    for index, name in ((1, "one"), (2, "two")):
+        shot_dir = output_root / f"{index:03d}-{name}"
+        shot_dir.mkdir(parents=True)
+        (shot_dir / f"{name}.webm").write_bytes(f"video-{index}".encode())
+        (shot_dir / "continuation.png").write_bytes(f"frame-{index}".encode())
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(
+        cli,
+        "load_workflow",
+        lambda path: {"1": {"class_type": "Test", "inputs": {}}},
+    )
+    args = build_parser().parse_args(
+        [
+            "scene",
+            str(manifest),
+            "--backfill-metadata",
+            "--output",
+            str(output_root),
+        ]
+    )
+    cli.render_scene(args)
+    second_metadata = output_root / "002-two/metadata.json"
+    second_metadata.unlink()
+    scene["shots"][0]["prompt"] = "Changed"
+    manifest.write_text(json.dumps(scene))
+
+    with pytest.raises(ValueError, match="existing shot metadata"):
+        cli.render_scene(args)
+
+    assert not second_metadata.exists()
+
+
+def test_metadata_output_path_rejects_paths_outside_output_root(tmp_path: Path) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    metadata_path = tmp_path / "metadata.json"
+
+    for unsafe_path in (str(outside), "../outside.png"):
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "output": {
+                        "path": unsafe_path,
+                        "sha256": cli.sha256_file(outside),
+                    }
+                }
+            )
+        )
+        assert cli._metadata_output_path(metadata_path, output_root) is None
+
+    link = output_root / "linked.png"
+    link.symlink_to(outside)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "output": {
+                    "path": link.name,
+                    "sha256": cli.sha256_file(outside),
+                }
+            }
+        )
+    )
+    assert cli._metadata_output_path(metadata_path, output_root) is None
 
 
 def test_scene_parser_accepts_existing_pod_restart() -> None:

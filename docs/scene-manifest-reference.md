@@ -17,17 +17,16 @@ The current scene system supports:
 - Automatic continuation from the decoded final frame of the previous shot.
 - Optional supplied end images through Wan first/last-frame conditioning.
 - Generated start images through the configured Z-Image Turbo workflow.
+- Generated start or end images through Qwen-Image-Edit-2511 with one to three
+  ordered references.
 - Code-level SDXL start-image support when a compatible custom profile is used.
-- Per-shot metadata, deterministic resume checks, start-image approval, and
+- Per-shot image workflow selection, dynamic prior-shot references, generated
+  image approval, and dependency-aware resume.
+- Per-shot metadata, deterministic resume checks, and
   local metadata backfill.
 
 The current scene system does not yet support:
 
-- Generated end images.
-- Instruction-based image editing.
-- Multiple reference images for one generated keyframe.
-- Qwen Image Edit.
-- Per-shot selection of different start-image workflows.
 - Arbitrary ComfyUI node overrides inside the scene manifest.
 
 Those capabilities may be added later. Fields that are not documented here
@@ -402,7 +401,7 @@ and fingerprinted.
 | Default | `null` |
 
 This requests a generated start image. Its complete field reference appears in
-the Generated Start Image section.
+the Generated Image Fields section.
 
 The generated image is created on the same Pod before video rendering,
 downloaded locally, and uploaded back to ComfyUI as the video start image.
@@ -434,7 +433,20 @@ Use an end image that is compatible with the start image and global prompt:
 Large incompatibilities can cause morphing, anatomy errors, abrupt transitions,
 or identity drift.
 
-Automatic end-image generation is not implemented in the current system.
+`end_image` and `generate_end_image` are mutually exclusive.
+
+### `generate_end_image`
+
+| Property | Value |
+| --- | --- |
+| Required | No |
+| Type | Object or `null` |
+| Default | `null` |
+
+This requests a generated end image and defaults to workflow `image_edit`. The
+bundled preset uses Qwen-Image-Edit-2511 with one to three ordered
+`reference_images`. The generated result is supplied to Wan as the desired end
+frame; the rendered video's decoded final frame remains the continuation.
 
 ### `duration_seconds`
 
@@ -487,10 +499,21 @@ This overrides CFG for both Wan sampling stages of the current shot. Use the
 scene baseline unless a controlled rerender demonstrates that the shot needs a
 different value.
 
-## Generated Start Image Fields
+## Generated Image Fields
 
-`generate_start_image` is a standalone image-generation request. It does not
-inherit scene or shot prompt text.
+`generate_start_image` and `generate_end_image` are standalone image-generation
+requests. They do not inherit scene or shot prompt text.
+
+### `workflow`
+
+| Property | Value |
+| --- | --- |
+| Required | No |
+| Type | String |
+| Default | `start_image` for start generation; `image_edit` for end generation |
+
+This selects a coherent profile workflow preset, including its adapter, model
+groups, workflow JSON, and defaults. The bundled `image_edit` preset uses Qwen.
 
 ### `adapter`
 
@@ -500,8 +523,7 @@ inherit scene or shot prompt text.
 | Type | String or `null` |
 | Parsed default | `null` |
 
-If supplied, this must exactly match the selected workflow adapter. It does not
-dynamically choose a separate workflow for one shot.
+If supplied, this must exactly match the selected workflow adapter.
 
 When omitted, it resolves to the active start-image workflow adapter. That
 selection normally comes from the profile preset, but a CLI adapter override
@@ -515,14 +537,13 @@ Current adapter names:
 
 - `z_image_turbo`
 - `sdxl`
+- `qwen_image_edit_2511`
 
-The bundled profile is fully configured only for `z_image_turbo`.
+The bundled profile is fully configured for `z_image_turbo` and the opt-in
+`qwen_image_edit_2511` workflow.
 
-If any shot anywhere in the scene declares `generate_start_image`, the scene
-command requires a `start_image` workflow preset even when only unrelated shots
-are selected. Request-level adapter and negative-prompt validation is performed
-for selected generated-image shots; an invalid request in an unselected shot
-can remain unnoticed until that shot is selected.
+Selected generated images and their dynamic generated-image dependencies are
+validated against their chosen workflow presets before worker use.
 
 ### `prompt`
 
@@ -563,6 +584,7 @@ adapter. Its workflow uses zeroed negative conditioning. Supplying a non-empty
 value with `z_image_turbo` causes validation to fail.
 
 SDXL supports this field when a compatible custom profile is configured.
+Qwen Image Edit also supports this field.
 
 ### `checkpoint`
 
@@ -590,6 +612,9 @@ workflow.
 | Validation | Positive multiple of 8 |
 
 This controls generated image width. It may differ from video width.
+
+Qwen Image Edit derives output dimensions from Picture 1 and rejects explicit
+`width` or `height` values.
 
 The safest choice is the exact video aspect ratio. A higher-resolution source
 can improve still-image detail, but it should preserve the video aspect ratio
@@ -697,7 +722,7 @@ The following generated-image fields use layered resolution:
 
 Precedence is:
 
-1. Explicit field in `generate_start_image`.
+1. Explicit field in `generate_start_image` or `generate_end_image`.
 2. `defaults` in the selected profile workflow preset.
 3. Built-in adapter default.
 
@@ -726,8 +751,18 @@ The effective negative prompt is assembled in this exact order:
 Empty components are omitted and the remaining components are joined with a
 comma and single space.
 
-Generated start-image prompts use only the text inside
-`generate_start_image`. There is no automatic inheritance.
+Generated-image prompts use only the text inside their generation object. There
+is no automatic inheritance.
+
+### `reference_images`
+
+Qwen Image Edit requires one to three references in exact list order. Picture 1
+controls composition and output size. Entries can name a manifest-relative
+`path`, the end generation's `current_start`, or a prior `shot_start`,
+`shot_end`, or `shot_continuation` with a positive 1-based `shot` number.
+References must point backward, so generated-image dependencies remain acyclic.
+See [`qwen-image-edit-2511.md`](qwen-image-edit-2511.md) for the complete forms
+and quality guidance.
 
 ## Prompting Strategy for Temporal Continuity
 
@@ -741,7 +776,8 @@ Use each prompt layer for one responsibility:
 | Shot `camera` | Framing, angle, perspective, and camera motion |
 | Scene negative prompt | Persistent exclusions |
 | Shot negative prompt | Action-specific or shot-specific exclusions |
-| Generated-image prompt | Complete standalone description of the initial still |
+| Generated start prompt | Complete standalone description of the initial still |
+| Generated end prompt | Direct edit instruction tied to ordered reference pictures |
 
 For best continuity:
 
@@ -779,10 +815,11 @@ immediately previous shot's `continuation.png`.
 The first shot cannot use continuation mode and must declare one of the first
 two modes.
 
-## Generated Start-Image Review and Approval
+## Generated-Image Review and Approval
 
-Start-image-only execution renders configured generated images without loading
-Wan models, requiring FFmpeg, or rendering video shots.
+`--start-image-only` renders configured start images. The generic
+`--generated-images-only` mode renders configured start and end images without
+loading Wan models, requiring FFmpeg, or rendering video shots.
 
 Approval behavior:
 
@@ -793,6 +830,8 @@ Approval behavior:
 - An approved image is uploaded as the video start frame without regeneration.
 - Approval does not imply video resume.
 - Start-image-only mode and approval mode are mutually exclusive.
+- `--approve-generated-images` validates both start and end roles, including
+  ordered reference hashes.
 
 Changing any fingerprinted generated-image input invalidates approval.
 
@@ -989,7 +1028,10 @@ Fingerprint inputs include:
 - Video dimensions, FPS, derived frames, and requested duration.
 - Start source category.
 - Start and end image names, sizes, and SHA-256 hashes.
-- Resolved generated start-image settings when applicable.
+- Resolved generated start- and end-image settings and their generation
+  fingerprints when applicable.
+- Ordered generated-image reference names, sizes, and SHA-256 hashes.
+- Prompt-refinement cache and artifact provenance when enabled.
 - Container image and ComfyUI arguments.
 - Workflow adapter, canonical base-workflow hash, and output suffix.
 - Workflow model groups and complete model declarations.
@@ -1035,7 +1077,8 @@ Dependency invalidation:
   rerender.
 - A shot with an explicit or generated start image does not depend on the
   predecessor's continuation.
-- Generated start images have separate metadata and reuse validation.
+- Generated start and end images have separate metadata and dependency-aware
+  reuse validation.
 
 If every selected shot is valid, no Pod is started. A complete scene can be
 assembled locally from reused clips.
@@ -1074,7 +1117,7 @@ Backfill does not overwrite existing shot or generated-image sidecars. It
 validates existing generated-image sidecars, refreshes the scene snapshot, and
 rebuilds the render manifest after the adoption set passes validation.
 
-## Start-Image Adapter Details
+## Image Adapter Details
 
 ### Z-Image Turbo
 
@@ -1097,6 +1140,14 @@ prompting and writes the checkpoint to `ckpt_name`.
 
 The bundled profile does not include an SDXL model group or an SDXL workflow
 preset. SDXL therefore requires a custom coherent profile before it can run.
+
+### Qwen-Image-Edit-2511
+
+The bundled opt-in adapter accepts one to three ordered reference images,
+supports negative prompting, and derives output dimensions from Picture 1. Its
+default workflow uses 40 steps, CFG 4, Euler, Simple, AuraFlow shift 3.1, and
+CFGNorm strength 1.0. Model artifacts and hashes are documented in
+[`qwen-image-edit-2511.md`](qwen-image-edit-2511.md).
 
 ## Wan Video Adapter Details
 
