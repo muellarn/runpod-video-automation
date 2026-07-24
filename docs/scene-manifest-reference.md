@@ -821,6 +821,16 @@ two modes.
 `--generated-images-only` mode renders configured start and end images without
 loading Wan models, requiring FFmpeg, or rendering video shots.
 
+`--preview-generated-images` handles scenes whose generated images normally
+depend on video continuations that do not exist yet. For preview purposes only,
+the previous generated end image stands in for the missing continuation. The
+normal render still consumes the true final decoded video frame. Preview images,
+metadata, input snapshots, and the preview render manifest are isolated below
+`output/000-image-preview/` and cannot be approved for video rendering.
+Each numbered preview shot directory contains `start.<ext>` and/or `end.<ext>`
+next to the corresponding `start.metadata.json` and `end.metadata.json`
+sidecars.
+
 Approval behavior:
 
 - A generated image receives a deterministic metadata sidecar.
@@ -962,6 +972,19 @@ The output root contains:
 | Numbered shot directories | Video, continuation frame, and shot metadata |
 | `render-manifest.json` | Rebuildable index of scene and shot metadata |
 | Slugified title plus video suffix | Final assembled video for a full-scene run |
+
+Preview mode uses a separate shot-oriented layout:
+
+```text
+000-image-preview/
+  scene.snapshot.json
+  render-manifest.json
+  001-opening/
+    start.png
+    start.metadata.json
+    end.png
+    end.metadata.json
+```
 
 Every successfully rendered shot writes:
 

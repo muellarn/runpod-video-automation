@@ -537,10 +537,20 @@ def write_render_manifest(
         ):
             if configured_generation is None:
                 continue
-            metadata_path = (
+            preview_metadata_path = (
+                output_root
+                / f"{index:03d}-{slugify(shot.name)}"
+                / f"{role}.metadata.json"
+            )
+            generated_metadata_path = (
                 output_root
                 / f"000-generated-{role}-image"
                 / f"{index:03d}-{slugify(shot.name)}.metadata.json"
+            )
+            metadata_path = (
+                preview_metadata_path
+                if preview_metadata_path.is_file()
+                else generated_metadata_path
             )
             metadata = read_metadata(metadata_path)
             inputs = metadata.get("inputs") if metadata is not None else None

@@ -88,10 +88,11 @@ is line-buffered, so status updates also appear immediately in redirected or
 `nohup` logs. Download, start-image, node, sampler, output, and completion
 progress is therefore shown directly by the main command.
 
-Remote package setup is summarized as one checking/ready pair for the downloader
-and configured system-package group. Full `apt` and `dpkg` output is kept in
-`/tmp/runpod-video-apt.log`; only its recent lines are printed when installation
-fails. Model-file, workflow-node, and sampler progress remains visible.
+Remote package setup is summarized instead of streaming `apt` or `dpkg` output.
+Active model downloads produce one compact progress line about every ten
+seconds. Recoverable aria2/Hugging Face range warnings stay in temporary remote
+logs; the CLI prints their recent lines only if a model ultimately fails size or
+SHA-256 verification. Resumable partial files remain on the Network Volume.
 
 Uploads, ComfyUI execution, and output downloads are retried twice by default.
 Set a different number of retries with `--retries N`. Before retrying a failed
@@ -323,6 +324,33 @@ hashes before worker use. `--resume` also reuses matching generated images and
 does not create a Pod when every selected image and video is current. Selecting
 only part of a scene automatically includes stale generated-image dependencies
 needed by dynamic references.
+
+To inspect every configured image before any video exists, use the isolated
+preview mode:
+
+```bash
+uv run runpod-video scene projects/cozy-bedroom \
+  --apply \
+  --preview-generated-images \
+  --keep-pod
+```
+
+Preview mode stores images, metadata, inputs, and its render manifest below
+`output/000-image-preview/`. When a shot normally inherits the previous video's
+final frame, preview mode substitutes the previous generated end image. This
+keeps the normal continuation-based render flow unchanged. Preview outputs are
+inspection artifacts and cannot be approved for video rendering.
+
+Each preview shot keeps its images and sidecars together:
+
+```text
+000-image-preview/
+  001-opening/
+    start.png
+    start.metadata.json
+    end.png
+    end.metadata.json
+```
 
 ## Prompt Refinement
 

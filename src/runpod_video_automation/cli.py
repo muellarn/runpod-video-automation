@@ -781,12 +781,36 @@ def _generated_image_metadata_path(
     )
 
 
+def _preview_generated_image_path(
+    output_root: Path,
+    index: int,
+    name: str,
+    role: str,
+    suffix: str,
+) -> Path:
+    return _preview_shot_dir(output_root, index, name) / f"{role}{suffix}"
+
+
+def _preview_shot_dir(output_root: Path, index: int, name: str) -> Path:
+    return output_root / f"{index:03d}-{slugify(name)}"
+
+
+def _preview_generated_image_metadata_path(
+    output_root: Path,
+    index: int,
+    name: str,
+    role: str,
+) -> Path:
+    return _preview_shot_dir(output_root, index, name) / f"{role}.metadata.json"
+
+
 def _build_image_generation_plans(
     profile: Profile,
     scene: Scene,
     shot_entries: list[tuple[int, Shot]],
     args: argparse.Namespace,
 ) -> tuple[dict[tuple[int, str], _ImageGenerationPlan], dict[str, WorkflowSelection]]:
+    preview_mode = bool(getattr(args, "preview_generated_images", False))
     selections: dict[str, WorkflowSelection] = {}
     plans: dict[tuple[int, str], _ImageGenerationPlan] = {}
     roots: list[tuple[tuple[int, str], bool]] = []
@@ -855,11 +879,21 @@ def _build_image_generation_plans(
             dependency: tuple[int, str] | None = None
             if reference.source == "current_start" and shot.generate_start_image:
                 dependency = (index, "start")
+            elif reference.source == "current_start" and preview_mode and index > 1:
+                if scene.shots[index - 2].generate_end_image:
+                    dependency = (index - 1, "end")
             elif reference.source == "shot_start":
                 referenced_index = int(reference.shot)
                 if scene.shots[referenced_index - 1].generate_start_image:
                     dependency = (referenced_index, "start")
+                elif preview_mode and referenced_index > 1:
+                    if scene.shots[referenced_index - 2].generate_end_image:
+                        dependency = (referenced_index - 1, "end")
             elif reference.source == "shot_end":
+                referenced_index = int(reference.shot)
+                if scene.shots[referenced_index - 1].generate_end_image:
+                    dependency = (referenced_index, "end")
+            elif reference.source == "shot_continuation" and preview_mode:
                 referenced_index = int(reference.shot)
                 if scene.shots[referenced_index - 1].generate_end_image:
                     dependency = (referenced_index, "end")
@@ -910,11 +944,13 @@ def _build_generation_inputs(
     profile: Profile,
     references: tuple[Path, ...],
     prompt_refinement: dict[str, Any] | None = None,
+    *,
+    preview_mode: bool = False,
 ) -> dict[str, Any]:
     if plan.workflow_sha256 is None:
         raise RuntimeError("Image workflow fingerprint is unavailable")
     if plan.legacy_start:
-        return build_start_image_inputs(
+        inputs = build_start_image_inputs(
             plan.shot,
             index=plan.index,
             profile=profile,
@@ -923,26 +959,62 @@ def _build_generation_inputs(
             start_workflow_sha256=plan.workflow_sha256,
             prompt_refinement=prompt_refinement,
         )
-    return build_generated_image_inputs(
-        plan.shot,
-        index=plan.index,
-        role=plan.role,
-        profile=profile,
-        generation=plan.generation,
-        image_workflow=plan.selection,
-        image_workflow_sha256=plan.workflow_sha256,
-        reference_images=references,
-        prompt_refinement=prompt_refinement,
-    )
+    else:
+        inputs = build_generated_image_inputs(
+            plan.shot,
+            index=plan.index,
+            role=plan.role,
+            profile=profile,
+            generation=plan.generation,
+            image_workflow=plan.selection,
+            image_workflow_sha256=plan.workflow_sha256,
+            reference_images=references,
+            prompt_refinement=prompt_refinement,
+        )
+    if preview_mode:
+        inputs["preview"] = {
+            "approval_eligible": False,
+            "synthetic_continuations": True,
+        }
+    return inputs
+
+
+def _prune_stale_preview_outputs(
+    output_root: Path,
+    *,
+    index: int,
+    role: str,
+) -> None:
+    for shot_dir in output_root.glob(f"{index:03d}-*"):
+        if not shot_dir.is_dir():
+            continue
+        for path in shot_dir.glob(f"{role}.*"):
+            if path.is_file() and (
+                path.suffix.lower() in IMAGE_SUFFIXES
+                or path.name == f"{role}.metadata.json"
+            ):
+                path.unlink()
+        try:
+            shot_dir.rmdir()
+        except OSError:
+            pass
 
 
 def _validate_generation_metadata(
     plan: _ImageGenerationPlan,
     inputs: dict[str, Any],
     output_root: Path,
+    *,
+    preview_mode: bool = False,
 ) -> tuple[Path | None, list[str]]:
-    metadata_path = _generated_image_metadata_path(
-        output_root, plan.index, plan.shot.name, plan.role
+    metadata_path = (
+        _preview_generated_image_metadata_path(
+            output_root, plan.index, plan.shot.name, plan.role
+        )
+        if preview_mode
+        else _generated_image_metadata_path(
+            output_root, plan.index, plan.shot.name, plan.role
+        )
     )
     metadata = read_metadata(metadata_path)
     if plan.legacy_start:
@@ -958,7 +1030,9 @@ def _resolve_generation_references(
     explicit_references: dict[tuple[int, str, int], Path],
     pending_images: set[tuple[int, str]],
     pending_videos: set[int],
+    pending_preview_continuations: set[int] | None = None,
 ) -> tuple[Path, ...] | None:
+    preview_continuations = pending_preview_continuations or set()
     resolved: list[Path] = []
     for position, reference in enumerate(plan.raw.reference_images, start=1):
         dependency: tuple[int, str] | None = None
@@ -972,7 +1046,10 @@ def _resolve_generation_references(
                 plan.shot.start_image is None
                 and plan.shot.generate_start_image is None
             ):
-                if plan.index - 1 in pending_videos:
+                if (
+                    plan.index - 1 in pending_videos
+                    or plan.index - 1 in preview_continuations
+                ):
                     return None
                 path = paths.get((plan.index - 1, "continuation"))
             else:
@@ -990,14 +1067,20 @@ def _resolve_generation_references(
                 and referenced_shot.start_image is None
                 and referenced_shot.generate_start_image is None
             ):
-                if dependency[0] - 1 in pending_videos:
+                if (
+                    dependency[0] - 1 in pending_videos
+                    or dependency[0] - 1 in preview_continuations
+                ):
                     return None
                 path = paths.get((dependency[0] - 1, "continuation"))
             else:
                 path = paths.get(dependency)
         elif reference.source == "shot_continuation":
             referenced_index = int(reference.shot)
-            if referenced_index in pending_videos:
+            if (
+                referenced_index in pending_videos
+                or referenced_index in preview_continuations
+            ):
                 return None
             path = paths.get((referenced_index, "continuation"))
             if path is not None and not path.is_file():
@@ -1370,9 +1453,14 @@ def _selected_shot_entries(
     return [(number, scene.shots[number - 1]) for number in selected]
 
 
-def _scene_image_modes(args: argparse.Namespace) -> tuple[bool, bool, bool, bool]:
+def _scene_image_modes(
+    args: argparse.Namespace,
+) -> tuple[bool, bool, bool, bool, bool]:
     start_image_only = bool(getattr(args, "start_image_only", False))
     generated_images_only = bool(getattr(args, "generated_images_only", False))
+    preview_generated_images = bool(
+        getattr(args, "preview_generated_images", False)
+    )
     approve_start_images = bool(getattr(args, "approve_start_images", False))
     approve_generated_images = bool(
         getattr(args, "approve_generated_images", False)
@@ -1380,6 +1468,11 @@ def _scene_image_modes(args: argparse.Namespace) -> tuple[bool, bool, bool, bool
     if start_image_only and generated_images_only:
         raise ValueError(
             "Use either --start-image-only or --generated-images-only, not both"
+        )
+    if preview_generated_images and (start_image_only or generated_images_only):
+        raise ValueError(
+            "Use only one of --start-image-only, --generated-images-only, or "
+            "--preview-generated-images"
         )
     if start_image_only and (approve_start_images or approve_generated_images):
         raise ValueError(
@@ -1389,6 +1482,12 @@ def _scene_image_modes(args: argparse.Namespace) -> tuple[bool, bool, bool, bool
         raise ValueError(
             "--generated-images-only cannot be combined with image approval flags"
         )
+    if preview_generated_images and (
+        approve_start_images or approve_generated_images
+    ):
+        raise ValueError(
+            "--preview-generated-images cannot be combined with image approval flags"
+        )
     if approve_start_images and approve_generated_images:
         raise ValueError(
             "Use either --approve-start-images or --approve-generated-images"
@@ -1396,6 +1495,7 @@ def _scene_image_modes(args: argparse.Namespace) -> tuple[bool, bool, bool, bool
     return (
         start_image_only,
         generated_images_only,
+        preview_generated_images,
         approve_start_images,
         approve_generated_images,
     )
@@ -1408,8 +1508,10 @@ def _preflight_scene_dependencies(
     args: argparse.Namespace,
     output_root: Path,
 ) -> None:
-    start_image_only, generated_images_only, _, _ = _scene_image_modes(args)
-    images_only = start_image_only or generated_images_only
+    start_image_only, generated_images_only, preview_mode, _, _ = (
+        _scene_image_modes(args)
+    )
+    images_only = start_image_only or generated_images_only or preview_mode
     selected_numbers = {index for index, _ in shot_entries}
     if start_image_only and not image_plans:
         raise ValueError(
@@ -1418,6 +1520,11 @@ def _preflight_scene_dependencies(
     if generated_images_only and not image_plans:
         raise ValueError(
             "--generated-images-only requires at least one configured image generation"
+        )
+    if preview_mode and not image_plans:
+        raise ValueError(
+            "--preview-generated-images requires at least one configured image "
+            "generation"
         )
 
     paths: dict[tuple[int, str], Path] = {}
@@ -1459,6 +1566,11 @@ def _preflight_scene_dependencies(
     }
     pending_videos = set() if images_only else selected_numbers
     pending_images = set(image_plans)
+    pending_preview_continuations = (
+        {index for index, role in image_plans if role == "end"}
+        if preview_mode
+        else set()
+    )
     for plan in image_plans.values():
         _resolve_generation_references(
             plan,
@@ -1467,6 +1579,7 @@ def _preflight_scene_dependencies(
             explicit_references=explicit_references,
             pending_images=pending_images,
             pending_videos=pending_videos,
+            pending_preview_continuations=pending_preview_continuations,
         )
 
 
@@ -1513,12 +1626,12 @@ def render_scene(args: argparse.Namespace) -> None:
     _validate_execution_args(args)
     if args.pod_id and not args.restart:
         raise ValueError("Prompt refinement with --pod-id requires --restart")
-    if image_modes[2] or image_modes[3]:
+    if image_modes[3] or image_modes[4]:
         raise ValueError(
             "Generated image approval with --refine-prompts requires a matching "
             "refinement cache; run refinement and image generation first"
         )
-    images_only = image_modes[0] or image_modes[1]
+    images_only = image_modes[0] or image_modes[1] or image_modes[2]
     if not images_only and shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to assemble scene outputs")
 
@@ -1623,10 +1736,13 @@ def _render_scene_effective(
     (
         start_image_only,
         generated_images_only,
+        preview_generated_images,
         approve_start_images,
         approve_generated_images,
     ) = _scene_image_modes(args)
-    images_only = start_image_only or generated_images_only
+    images_only = (
+        start_image_only or generated_images_only or preview_generated_images
+    )
 
     image_plans, image_selections = _build_image_generation_plans(
         profile, scene, shot_entries, args
@@ -1667,6 +1783,7 @@ def _render_scene_effective(
                 (args.apply, "--apply"),
                 (start_image_only, "--start-image-only"),
                 (generated_images_only, "--generated-images-only"),
+                (preview_generated_images, "--preview-generated-images"),
                 (approve_start_images, "--approve-start-images"),
                 (approve_generated_images, "--approve-generated-images"),
                 (getattr(args, "resume", False), "--resume"),
@@ -1707,7 +1824,12 @@ def _render_scene_effective(
     if not args.apply:
         raise RuntimeError("Refusing to create billable resources without --apply")
     _validate_execution_args(args)
-    output_root = _scene_output_root(scene_path, args.output)
+    scene_output_root = _scene_output_root(scene_path, args.output)
+    output_root = (
+        scene_output_root / "000-image-preview"
+        if preview_generated_images
+        else scene_output_root
+    )
     if not images_only and shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to assemble scene outputs")
     scene_snapshot = _snapshot_scene(metadata_scene_path, output_root)
@@ -1758,7 +1880,15 @@ def _render_scene_effective(
             if generation is None or (index, role) in image_plans:
                 continue
             existing = _metadata_output_path(
-                _generated_image_metadata_path(output_root, index, shot.name, role),
+                (
+                    _preview_generated_image_metadata_path(
+                        output_root, index, shot.name, role
+                    )
+                    if preview_generated_images
+                    else _generated_image_metadata_path(
+                        output_root, index, shot.name, role
+                    )
+                ),
                 output_root,
             )
             if existing is not None:
@@ -1790,6 +1920,11 @@ def _render_scene_effective(
     if generated_images_only and not image_plans:
         raise ValueError(
             "--generated-images-only requires at least one configured image generation"
+        )
+    if preview_generated_images and not image_plans:
+        raise ValueError(
+            "--preview-generated-images requires at least one configured image "
+            "generation"
         )
     base_workflow: dict[str, Any] | None = None
     video_workflow_sha256 = ""
@@ -1870,6 +2005,11 @@ def _render_scene_effective(
     operation_indices = sorted(
         selected_numbers | {index for index, _ in image_plans}
     )
+    pending_preview_continuations = (
+        {index for index, role in image_plans if role == "end"}
+        if preview_generated_images
+        else set()
+    )
     for index in operation_indices:
         shot = scene.shots[index - 1]
         if shot.generate_start_image is None and shot.start_image is None:
@@ -1887,6 +2027,7 @@ def _render_scene_effective(
                 explicit_references=explicit_references,
                 pending_images=pending_images,
                 pending_videos=pending_videos,
+                pending_preview_continuations=pending_preview_continuations,
             )
             must_approve = approve_generated_images or (
                 approve_start_images and plan.required_by_start_approval
@@ -1901,10 +2042,17 @@ def _render_scene_effective(
                 continue
             plan.reference_paths = references
             plan.inputs = _build_generation_inputs(
-                plan, profile, references, prompt_refinement
+                plan,
+                profile,
+                references,
+                prompt_refinement,
+                preview_mode=preview_generated_images,
             )
             existing_image, differences = _validate_generation_metadata(
-                plan, plan.inputs, output_root
+                plan,
+                plan.inputs,
+                output_root,
+                preview_mode=preview_generated_images,
             )
             if must_approve:
                 if existing_image is None or differences:
@@ -1916,9 +2064,15 @@ def _render_scene_effective(
                     )
                 plan.image = existing_image
                 paths[(index, role)] = existing_image
+                if preview_generated_images and role == "end":
+                    paths[(index, "continuation")] = existing_image
+                    pending_preview_continuations.discard(index)
             elif resume and existing_image is not None and not differences:
                 plan.image = existing_image
                 paths[(index, role)] = existing_image
+                if preview_generated_images and role == "end":
+                    paths[(index, "continuation")] = existing_image
+                    pending_preview_continuations.discard(index)
                 print(f"Resume: reusing generated {role} image {existing_image}")
             else:
                 if resume and differences:
@@ -2078,7 +2232,11 @@ def _render_scene_effective(
                     )
                 plan.reference_paths = references
                 plan.inputs = _build_generation_inputs(
-                    plan, profile, references, prompt_refinement
+                    plan,
+                    profile,
+                    references,
+                    prompt_refinement,
+                    preview_mode=preview_generated_images,
                 )
                 reference_names: list[str] = []
                 for position, reference_path in enumerate(references, start=1):
@@ -2097,6 +2255,12 @@ def _render_scene_effective(
                     reference_names.append(uploaded)
                 if plan.workflow is None:
                     raise RuntimeError("Image workflow was not loaded")
+                if preview_generated_images:
+                    _prune_stale_preview_outputs(
+                        output_root,
+                        index=index,
+                        role=role,
+                    )
                 print(f"Generating {role} keyframe for shot {index}: {shot.name}")
                 generation_started = time.monotonic()
                 generation_workflow = build_image_workflow(
@@ -2118,7 +2282,11 @@ def _render_scene_effective(
                         flush=True,
                     ),
                 )
-                generated_dir = _generated_image_dir(output_root, role)
+                generated_dir = (
+                    _preview_shot_dir(output_root, index, shot.name)
+                    if preview_generated_images
+                    else _generated_image_dir(output_root, role)
+                )
                 generated_outputs = _retry_operation(
                     f"{role.capitalize()} image download",
                     getattr(args, "retries", 2),
@@ -2138,12 +2306,32 @@ def _render_scene_effective(
                         "produced "
                         f"{len(generated_images)} images; expected 1"
                     )
+                if preview_generated_images:
+                    source_image = generated_images[0]
+                    preview_image = _preview_generated_image_path(
+                        output_root,
+                        index,
+                        shot.name,
+                        role,
+                        source_image.suffix.lower() or ".png",
+                    )
+                    if source_image != preview_image:
+                        source_image.replace(preview_image)
+                    generated_images = [preview_image]
                 plan.image = generated_images[0]
                 paths[key] = plan.image
+                if preview_generated_images and role == "end":
+                    paths[(index, "continuation")] = plan.image
                 generated_image_count += 1
                 print(f"Generated {role} keyframe: {plan.image}")
-                metadata_path = _generated_image_metadata_path(
-                    output_root, index, shot.name, role
+                metadata_path = (
+                    _preview_generated_image_metadata_path(
+                        output_root, index, shot.name, role
+                    )
+                    if preview_generated_images
+                    else _generated_image_metadata_path(
+                        output_root, index, shot.name, role
+                    )
                 )
                 writer = (
                     write_start_image_metadata
@@ -2274,7 +2462,11 @@ def _render_scene_effective(
             selected_shots=sorted(selected_numbers),
             prompt_refinement=prompt_refinement,
         )
-        label = "start keyframe" if start_image_only else "generated image"
+        label = (
+            "preview image"
+            if preview_generated_images
+            else "start keyframe" if start_image_only else "generated image"
+        )
         print(f"Generated {generated_image_count} {label}(s) in {output_root}")
         return
     if not all_shots_selected:
@@ -2527,6 +2719,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--generated-images-only",
         action="store_true",
         help="Generate configured start and end images without rendering video shots",
+    )
+    scene_parser.add_argument(
+        "--preview-generated-images",
+        action="store_true",
+        help=(
+            "Preview all generated images in an isolated folder, using prior "
+            "generated end images when video continuations do not exist"
+        ),
     )
     scene_parser.add_argument(
         "--approve-start-images",
