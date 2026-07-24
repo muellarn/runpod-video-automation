@@ -1,0 +1,31 @@
+{
+  "title": "Window Scene",
+  "global_prompt": "The same clearly adult character, age 28, in the same room, realistic cinematic style, warm evening light, stable identity and clothing, continuous natural motion",
+  "negative_prompt": "underage, childlike appearance, identity drift, distorted anatomy, extra limbs, fused fingers, flicker, jitter, sudden scene cut, low quality",
+  "width": 768,
+  "height": 768,
+  "fps": 16,
+  "steps": 20,
+  "transition_step": 10,
+  "cfg": 3.5,
+  "shots": [
+    {
+      "name": "Approach Window",
+      "start_image": "example-start.ppm",
+      "end_image": "example-end.ppm",
+      "duration_seconds": 5,
+      "prompt": "The character slowly walks toward the window, clothes and hair move naturally",
+      "camera": "slow tracking shot from behind",
+      "seed": 1234
+    },
+    {
+      "name": "Turn To Camera",
+      "duration_seconds": 5,
+      "prompt": "The character turns toward the camera and establishes eye contact, subtle natural breathing",
+      "camera": "slow cinematic dolly-in",
+      "negative_prompt": "abrupt turn, camera shake",
+      "seed": 5678,
+      "cfg": 4.0
+    }
+  ]
+}

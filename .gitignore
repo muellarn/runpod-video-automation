@@ -1,0 +1,7 @@
+.env
+.pytest_cache/
+.runpod-video-state.json
+.venv/
+__pycache__/
+*.py[cod]
+output/

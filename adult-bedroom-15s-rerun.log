@@ -1,0 +1,666 @@
+Scene: Cozy Bedroom
+Format: 576x800 at 16 FPS
+Sampling: 20 steps, transition at 10
+Shots: 3, approximately 15.2 seconds
+Global prompt: The same fictional adult woman, age 28, blonde hair, slender adult body, small natural breasts, gentle slightly shy adult expression, wearing a matte black bra and matching black briefs with minimal smooth lace trim, in the same cozy warmly lit bedroom with a bed, soft blankets and green plants, realistic cinematic photography, stable identity, stable body proportions, natural skin texture, continuous slow sensual movement
+Negative prompt: minor, underage, teenager, adolescent, childlike, identity drift, changing face, changing hair, changing room, extra breasts, extra nipples, malformed breasts, distorted anatomy, extra limbs, fused fingers, broken hands, flicker, jitter, sudden scene cut, camera shake, blur, low quality
+  001 Standing Before Bed: 81 frames, seed 22001, start generated with z_image_turbo (cyberrealisticZImage_v50.safetensors) at 864x1200
+      Action: She stands directly in front of the bed facing the camera, maintains soft eye contact, breathes naturally, then slowly begins to sit down on the edge of the bed, her blonde hair and black underwear move naturally, the bra and briefs remain securely worn throughout this shot
+      Camera: locked frontal medium full shot, camera at chest height, symmetrical composition, no camera movement
+  002 Sitting On Bed: 81 frames, seed 22002, start previous shot's last frame
+      Action: Now seated on the edge of the bed and still facing the camera, she adjusts her posture, gives a gentle slightly shy adult smile, slowly reaches behind her back and carefully unfastens the black bra, natural deliberate hand movement, the bra remains on her body until the clasp is fully unfastened
+      Camera: locked frontal medium shot, unobstructed view of her upper body, no camera movement
+  003 Removing Bra: 81 frames, seed 22003, start previous shot's last frame
+      Action: Still seated and facing the camera, the adult woman slowly slides both bra straps from her shoulders and gently removes the black bra, revealing her small natural breasts, she holds the removed bra beside her and maintains a gentle sensual adult expression, subtle natural breathing, realistic body movement
+      Camera: locked frontal medium shot, clear unobstructed view, no zoom, no camera movement
+Network volume: n2em0msg5a (reused)
+Pod 7ejdfaph9unfc4 created
+[1/7] Ensuring models/unet/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+[2/7] Ensuring models/unet/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+[3/7] Ensuring models/clip/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+[4/7] Ensuring models/vae/wan_2.1_vae.safetensors
+[5/7] Ensuring models/diffusion_models/cyberrealisticZImage_v50.safetensors
+[6/7] Ensuring models/text_encoders/qwen_3_4b.safetensors
+[7/7] Ensuring models/vae/ae.safetensors
+W: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease: Key is stored in legacy trusted.gpg keyring (/etc/apt/trusted.gpg), see the DEPRECATION section in apt-key(8) for details.
+debconf: delaying package configuration, since apt-utils is not installed
+Selecting previously unselected package libcares2:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 30685 files and directories currently installed.)
+Preparing to unpack .../libcares2_1.27.0-1.0ubuntu1_amd64.deb ...
+Unpacking libcares2:amd64 (1.27.0-1.0ubuntu1) ...
+Selecting previously unselected package libssh2-1t64:amd64.
+Preparing to unpack .../libssh2-1t64_1.11.0-4.1ubuntu0.24.04.3_amd64.deb ...
+Unpacking libssh2-1t64:amd64 (1.11.0-4.1ubuntu0.24.04.3) ...
+Selecting previously unselected package libaria2-0:amd64.
+Preparing to unpack .../libaria2-0_1.37.0+debian-1build3_amd64.deb ...
+Unpacking libaria2-0:amd64 (1.37.0+debian-1build3) ...
+Selecting previously unselected package aria2.
+Preparing to unpack .../aria2_1.37.0+debian-1build3_amd64.deb ...
+Unpacking aria2 (1.37.0+debian-1build3) ...
+Setting up libcares2:amd64 (1.27.0-1.0ubuntu1) ...
+Setting up libssh2-1t64:amd64 (1.11.0-4.1ubuntu0.24.04.3) ...
+Setting up libaria2-0:amd64 (1.37.0+debian-1build3) ...
+Setting up aria2 (1.37.0+debian-1build3) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.3) ...
+[#18eb07 0B/7.4GiB(0%) CN:4 DL:0B]
+[#18eb07 66MiB/7.4GiB(0%) CN:4 DL:66MiB ETA:1m54s]
+[#18eb07 148MiB/7.4GiB(1%) CN:4 DL:74MiB ETA:1m40s]
+[#18eb07 230MiB/7.4GiB(2%) CN:4 DL:77MiB ETA:1m36s]
+[#18eb07 310MiB/7.4GiB(4%) CN:4 DL:78MiB ETA:1m34s]
+[#18eb07 384MiB/7.4GiB(5%) CN:4 DL:77MiB ETA:1m34s]
+[#18eb07 463MiB/7.4GiB(6%) CN:4 DL:77MiB ETA:1m32s]
+[#18eb07 542MiB/7.4GiB(7%) CN:4 DL:77MiB ETA:1m31s]
+[#18eb07 616MiB/7.4GiB(8%) CN:4 DL:77MiB ETA:1m31s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:00 2026 *** 
+===============================================================================
+[#18eb07 694MiB/7.4GiB(9%) CN:4 DL:77MiB ETA:1m29s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 0B/11GiB(0%) CN:4 DL:0B]
+[#87a07f 63MiB/11GiB(0%) CN:4 DL:64MiB ETA:3m5s]
+[#87a07f 143MiB/11GiB(1%) CN:4 DL:71MiB ETA:2m44s]
+[#87a07f 219MiB/11GiB(1%) CN:4 DL:73MiB ETA:2m40s]
+[#87a07f 290MiB/11GiB(2%) CN:4 DL:72MiB ETA:2m40s]
+[#87a07f 361MiB/11GiB(3%) CN:4 DL:72MiB ETA:2m40s]
+[#87a07f 434MiB/11GiB(3%) CN:4 DL:72MiB ETA:2m38s]
+[#87a07f 510MiB/11GiB(4%) CN:4 DL:73MiB ETA:2m36s]
+[#87a07f 584MiB/11GiB(4%) CN:4 DL:73MiB ETA:2m35s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:00 2026 *** 
+===============================================================================
+[#87a07f 660MiB/11GiB(5%) CN:4 DL:73MiB ETA:2m33s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 694MiB/7.4GiB(9%) CN:4 DL:77MiB ETA:1m29s]
+[#18eb07 775MiB/7.4GiB(10%) CN:4 DL:77MiB ETA:1m28s]
+[#18eb07 855MiB/7.4GiB(11%) CN:4 DL:79MiB ETA:1m26s]
+[#18eb07 0.9GiB/7.4GiB(12%) CN:4 DL:79MiB ETA:1m25s]
+[#18eb07 0.9GiB/7.4GiB(13%) CN:4 DL:78MiB ETA:1m24s]
+[#18eb07 1.0GiB/7.4GiB(14%) CN:4 DL:79MiB ETA:1m22s]
+[#18eb07 1.1GiB/7.4GiB(15%) CN:4 DL:82MiB ETA:1m18s]
+[#18eb07 1.2GiB/7.4GiB(16%) CN:4 DL:83MiB ETA:1m16s]
+[#18eb07 1.3GiB/7.4GiB(17%) CN:4 DL:84MiB ETA:1m14s]
+[#18eb07 1.4GiB/7.4GiB(18%) CN:4 DL:84MiB ETA:1m13s]
+[#18eb07 1.4GiB/7.4GiB(19%) CN:4 DL:83MiB ETA:1m13s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:11 2026 *** 
+===============================================================================
+[#18eb07 1.5GiB/7.4GiB(20%) CN:4 DL:83MiB ETA:1m12s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 660MiB/11GiB(5%) CN:4 DL:73MiB ETA:2m33s]
+[#87a07f 755MiB/11GiB(6%) CN:4 DL:75MiB ETA:2m27s]
+[#87a07f 843MiB/11GiB(7%) CN:4 DL:78MiB ETA:2m22s]
+[#87a07f 920MiB/11GiB(7%) CN:4 DL:78MiB ETA:2m21s]
+[#87a07f 0.9GiB/11GiB(8%) CN:4 DL:78MiB ETA:2m20s]
+[#87a07f 1.0GiB/11GiB(8%) CN:4 DL:79MiB ETA:2m17s]
+[#87a07f 1.1GiB/11GiB(9%) CN:4 DL:80MiB ETA:2m14s]
+[#87a07f 1.2GiB/11GiB(10%) CN:4 DL:82MiB ETA:2m10s]
+[#87a07f 1.2GiB/11GiB(11%) CN:4 DL:81MiB ETA:2m10s]
+[#87a07f 1.3GiB/11GiB(11%) CN:4 DL:81MiB ETA:2m9s]
+[#87a07f 1.4GiB/11GiB(12%) CN:4 DL:81MiB ETA:2m9s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:11 2026 *** 
+===============================================================================
+[#87a07f 1.5GiB/11GiB(12%) CN:4 DL:78MiB ETA:2m12s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 1.5GiB/11GiB(12%) CN:4 DL:78MiB ETA:2m12s]
+[#87a07f 1.5GiB/11GiB(13%) CN:4 DL:77MiB ETA:2m13s]
+[#87a07f 1.6GiB/11GiB(14%) CN:4 DL:77MiB ETA:2m13s]
+[#87a07f 1.7GiB/11GiB(14%) CN:4 DL:78MiB ETA:2m10s]
+[#87a07f 1.8GiB/11GiB(15%) CN:4 DL:77MiB ETA:2m10s]
+[#87a07f 1.8GiB/11GiB(15%) CN:4 DL:75MiB ETA:2m13s]
+[#87a07f 1.9GiB/11GiB(16%) CN:4 DL:71MiB ETA:2m19s]
+[#87a07f 1.9GiB/11GiB(16%) CN:4 DL:70MiB ETA:2m21s]
+[#87a07f 2.0GiB/11GiB(17%) CN:4 DL:69MiB ETA:2m23s]
+[#87a07f 2.1GiB/11GiB(18%) CN:4 DL:69MiB ETA:2m20s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:21 2026 *** 
+===============================================================================
+[#87a07f 2.2GiB/11GiB(18%) CN:4 DL:71MiB ETA:2m15s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 1.5GiB/7.4GiB(20%) CN:4 DL:83MiB ETA:1m12s]
+[#18eb07 1.6GiB/7.4GiB(21%) CN:4 DL:83MiB ETA:1m12s]
+[#18eb07 1.7GiB/7.4GiB(22%) CN:4 DL:82MiB ETA:1m11s]
+[#18eb07 1.7GiB/7.4GiB(23%) CN:4 DL:82MiB ETA:1m10s]
+[#18eb07 1.8GiB/7.4GiB(24%) CN:4 DL:81MiB ETA:1m10s]
+[#18eb07 1.9GiB/7.4GiB(25%) CN:4 DL:77MiB ETA:1m13s]
+[#18eb07 1.9GiB/7.4GiB(26%) CN:4 DL:73MiB ETA:1m17s]
+[#18eb07 2.0GiB/7.4GiB(27%) CN:4 DL:71MiB ETA:1m18s]
+[#18eb07 2.0GiB/7.4GiB(27%) CN:4 DL:69MiB ETA:1m19s]
+[#18eb07 2.1GiB/7.4GiB(29%) CN:4 DL:69MiB ETA:1m17s]
+[#18eb07 2.2GiB/7.4GiB(30%) CN:4 DL:71MiB ETA:1m15s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:22 2026 *** 
+===============================================================================
+[#18eb07 2.3GiB/7.4GiB(31%) CN:4 DL:71MiB ETA:1m13s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 2.2GiB/11GiB(18%) CN:4 DL:71MiB ETA:2m15s]
+[#87a07f 2.2GiB/11GiB(19%) CN:4 DL:71MiB ETA:2m15s]
+[#87a07f 2.3GiB/11GiB(20%) CN:4 DL:72MiB ETA:2m12s]
+[#87a07f 2.4GiB/11GiB(20%) CN:4 DL:67MiB ETA:2m20s]
+[#87a07f 2.4GiB/11GiB(20%) CN:4 DL:65MiB ETA:2m25s]
+[#87a07f 2.5GiB/11GiB(21%) CN:4 DL:66MiB ETA:2m21s]
+[#87a07f 2.5GiB/11GiB(21%) CN:4 DL:65MiB ETA:2m23s]
+[#87a07f 2.5GiB/11GiB(22%) CN:4 DL:63MiB ETA:2m27s]
+[#87a07f 2.6GiB/11GiB(22%) CN:4 DL:59MiB ETA:2m35s]
+[#87a07f 2.6GiB/11GiB(22%) CN:4 DL:56MiB ETA:2m43s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:31 2026 *** 
+===============================================================================
+[#87a07f 2.7GiB/11GiB(23%) CN:4 DL:54MiB ETA:2m47s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 2.3GiB/7.4GiB(31%) CN:4 DL:71MiB ETA:1m13s]
+[#18eb07 2.4GiB/7.4GiB(32%) CN:4 DL:71MiB ETA:1m12s]
+[#18eb07 2.4GiB/7.4GiB(32%) CN:4 DL:69MiB ETA:1m14s]
+[#18eb07 2.5GiB/7.4GiB(33%) CN:4 DL:65MiB ETA:1m18s]
+[#18eb07 2.5GiB/7.4GiB(34%) CN:4 DL:66MiB ETA:1m16s]
+[#18eb07 2.6GiB/7.4GiB(34%) CN:4 DL:65MiB ETA:1m16s]
+[#18eb07 2.6GiB/7.4GiB(35%) CN:4 DL:63MiB ETA:1m17s]
+[#18eb07 2.6GiB/7.4GiB(35%) CN:4 DL:60MiB ETA:1m21s]
+[#18eb07 2.7GiB/7.4GiB(36%) CN:4 DL:57MiB ETA:1m24s]
+[#18eb07 2.8GiB/7.4GiB(37%) CN:4 DL:54MiB ETA:1m28s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:32 2026 *** 
+===============================================================================
+[#18eb07 2.8GiB/7.4GiB(38%) CN:4 DL:54MiB ETA:1m26s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#143e33 5.0MiB/319MiB(1%) CN:4 DL:13MiB ETA:23s]
+[#143e33 76MiB/319MiB(23%) CN:4 DL:55MiB ETA:4s]
+[#143e33 161MiB/319MiB(50%) CN:4 DL:68MiB ETA:2s]
+[#143e33 244MiB/319MiB(76%) CN:4 DL:72MiB ETA:1s]
+
+Download Results:
+gid   |stat|avg speed  |path/URI
+======+====+===========+=======================================================
+143e33|OK  |    69MiB/s|/runpod-volume/models/vae/ae.safetensors.part
+
+Status Legend:
+(OK):download completed.
+[#87a07f 2.7GiB/11GiB(23%) CN:4 DL:54MiB ETA:2m47s]
+[#87a07f 2.8GiB/11GiB(24%) CN:4 DL:55MiB ETA:2m43s]
+[#87a07f 2.8GiB/11GiB(24%) CN:4 DL:55MiB ETA:2m42s]
+[#87a07f 2.9GiB/11GiB(25%) CN:4 DL:60MiB ETA:2m28s]
+[#87a07f 3.0GiB/11GiB(26%) CN:4 DL:61MiB ETA:2m23s]
+[#87a07f 3.1GiB/11GiB(26%) CN:4 DL:63MiB ETA:2m18s]
+[#87a07f 3.2GiB/11GiB(27%) CN:4 DL:67MiB ETA:2m9s]
+[#87a07f 3.2GiB/11GiB(28%) CN:4 DL:73MiB ETA:1m56s]
+[#87a07f 3.3GiB/11GiB(28%) CN:4 DL:78MiB ETA:1m47s]
+[#87a07f 3.4GiB/11GiB(29%) CN:4 DL:80MiB ETA:1m45s]
+[#87a07f 3.5GiB/11GiB(30%) CN:4 DL:80MiB ETA:1m43s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:42 2026 *** 
+===============================================================================
+[#87a07f 3.6GiB/11GiB(30%) CN:4 DL:80MiB ETA:1m42s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 2.8GiB/7.4GiB(38%) CN:4 DL:54MiB ETA:1m26s]
+[#18eb07 2.9GiB/7.4GiB(39%) CN:4 DL:55MiB ETA:1m24s]
+[#18eb07 3.0GiB/7.4GiB(40%) CN:4 DL:60MiB ETA:1m15s]
+[#18eb07 3.1GiB/7.4GiB(41%) CN:4 DL:62MiB ETA:1m11s]
+[#18eb07 3.1GiB/7.4GiB(42%) CN:4 DL:64MiB ETA:1m7s]
+[#18eb07 3.2GiB/7.4GiB(43%) CN:4 DL:68MiB ETA:1m3s]
+[#18eb07 3.3GiB/7.4GiB(44%) CN:4 DL:74MiB ETA:57s]
+[#18eb07 3.4GiB/7.4GiB(46%) CN:4 DL:79MiB ETA:52s]
+[#18eb07 3.5GiB/7.4GiB(47%) CN:4 DL:80MiB ETA:50s]
+[#18eb07 3.5GiB/7.4GiB(48%) CN:4 DL:81MiB ETA:48s]
+[#18eb07 3.6GiB/7.4GiB(49%) CN:4 DL:82MiB ETA:47s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:43 2026 *** 
+===============================================================================
+[#18eb07 3.7GiB/7.4GiB(50%) CN:4 DL:81MiB ETA:47s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 3.6GiB/11GiB(30%) CN:4 DL:80MiB ETA:1m42s]
+[#87a07f 3.6GiB/11GiB(31%) CN:4 DL:79MiB ETA:1m42s]
+[#87a07f 3.7GiB/11GiB(32%) CN:4 DL:80MiB ETA:1m41s]
+[#87a07f 3.8GiB/11GiB(32%) CN:4 DL:80MiB ETA:1m40s]
+[#87a07f 3.9GiB/11GiB(33%) CN:4 DL:80MiB ETA:1m39s]
+[#87a07f 3.9GiB/11GiB(34%) CN:4 DL:80MiB ETA:1m38s]
+[#87a07f 4.0GiB/11GiB(34%) CN:4 DL:77MiB ETA:1m41s]
+[#87a07f 4.1GiB/11GiB(35%) CN:4 DL:77MiB ETA:1m39s]
+[#87a07f 4.2GiB/11GiB(35%) CN:4 DL:77MiB ETA:1m38s]
+ *** Download Progress Summary as of Thu Jul 23 22:09:57 2026 *** 
+===============================================================================
+[#87a07f 4.2GiB/11GiB(36%) CN:4 DL:19MiB ETA:6m33s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 4.2GiB/11GiB(36%) CN:4 DL:19MiB ETA:6m33s]
+[#87a07f 4.2GiB/11GiB(36%) CN:4 DL:14MiB ETA:8m47s]
+[#87a07f 4.2GiB/11GiB(36%) CN:4 DL:9.5MiB ETA:13m16s]
+[#87a07f 4.2GiB/11GiB(36%) CN:4 DL:27MiB ETA:4m31s]
+[#87a07f 4.3GiB/11GiB(36%) CN:4 DL:26MiB ETA:4m40s]
+[#87a07f 4.3GiB/11GiB(37%) CN:4 DL:26MiB ETA:4m48s]
+[#87a07f 4.3GiB/11GiB(37%) CN:4 DL:25MiB ETA:4m52s]
+[#87a07f 4.3GiB/11GiB(37%) CN:4 DL:25MiB ETA:4m52s]
+[#87a07f 4.4GiB/11GiB(37%) CN:4 DL:25MiB ETA:4m51s]
+[#87a07f 4.4GiB/11GiB(38%) CN:4 DL:28MiB ETA:4m24s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:07 2026 *** 
+===============================================================================
+[#87a07f 4.4GiB/11GiB(38%) CN:4 DL:27MiB ETA:4m26s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 4.4GiB/11GiB(38%) CN:4 DL:27MiB ETA:4m26s]
+[#87a07f 4.5GiB/11GiB(38%) CN:4 DL:27MiB ETA:4m31s]
+[#87a07f 4.5GiB/11GiB(38%) CN:4 DL:27MiB ETA:4m31s]
+[#87a07f 4.5GiB/11GiB(39%) CN:4 DL:27MiB ETA:4m22s]
+[#87a07f 4.5GiB/11GiB(39%) CN:4 DL:28MiB ETA:4m16s]
+[#87a07f 4.6GiB/11GiB(39%) CN:4 DL:28MiB ETA:4m14s]
+[#87a07f 4.6GiB/11GiB(39%) CN:4 DL:29MiB ETA:4m2s]
+[#87a07f 4.6GiB/11GiB(39%) CN:4 DL:29MiB ETA:4m2s]
+[#87a07f 4.7GiB/11GiB(40%) CN:4 DL:26MiB ETA:4m26s]
+[#87a07f 4.7GiB/11GiB(40%) CN:4 DL:29MiB ETA:4m]
+ *** Download Progress Summary as of Thu Jul 23 22:10:17 2026 *** 
+===============================================================================
+[#87a07f 4.7GiB/11GiB(40%) CN:4 DL:30MiB ETA:3m50s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 4.7GiB/11GiB(40%) CN:4 DL:30MiB ETA:3m50s]
+[#87a07f 4.8GiB/11GiB(41%) CN:4 DL:31MiB ETA:3m45s]
+[#87a07f 4.8GiB/11GiB(41%) CN:4 DL:30MiB ETA:3m47s]
+[#87a07f 4.8GiB/11GiB(41%) CN:4 DL:30MiB ETA:3m46s]
+[#87a07f 4.8GiB/11GiB(41%) CN:4 DL:30MiB ETA:3m50s]
+[#87a07f 4.9GiB/11GiB(42%) CN:4 DL:30MiB ETA:3m47s]
+[#87a07f 4.9GiB/11GiB(42%) CN:4 DL:31MiB ETA:3m38s]
+[#87a07f 4.9GiB/11GiB(42%) CN:4 DL:32MiB ETA:3m31s]
+[#87a07f 5.0GiB/11GiB(42%) CN:4 DL:33MiB ETA:3m26s]
+[#87a07f 5.0GiB/11GiB(43%) CN:4 DL:32MiB ETA:3m28s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:27 2026 *** 
+===============================================================================
+[#87a07f 5.0GiB/11GiB(43%) CN:4 DL:31MiB ETA:3m38s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 3.7GiB/7.4GiB(50%) CN:4 DL:81MiB ETA:47s]
+[#18eb07 3.8GiB/7.4GiB(51%) CN:4 DL:82MiB ETA:45s]
+[#18eb07 3.9GiB/7.4GiB(52%) CN:4 DL:82MiB ETA:44s]
+[#18eb07 3.9GiB/7.4GiB(53%) CN:4 DL:82MiB ETA:43s]
+[#18eb07 4.0GiB/7.4GiB(54%) CN:4 DL:81MiB ETA:43s]
+[#18eb07 4.1GiB/7.4GiB(55%) CN:4 DL:80MiB ETA:42s]
+[#18eb07 4.2GiB/7.4GiB(56%) CN:4 DL:81MiB ETA:41s]
+[#18eb07 4.3GiB/7.4GiB(57%) CN:4 DL:81MiB ETA:40s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:37 2026 *** 
+===============================================================================
+[#18eb07 4.3GiB/7.4GiB(57%) CN:4 DL:0B]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 5.0GiB/11GiB(43%) CN:4 DL:31MiB ETA:3m38s]
+[#87a07f 5.1GiB/11GiB(43%) CN:4 DL:30MiB ETA:3m40s]
+[#87a07f 5.1GiB/11GiB(43%) CN:4 DL:30MiB ETA:3m40s]
+[#87a07f 5.1GiB/11GiB(44%) CN:4 DL:31MiB ETA:3m33s]
+[#87a07f 5.2GiB/11GiB(44%) CN:4 DL:36MiB ETA:3m]
+[#87a07f 5.3GiB/11GiB(45%) CN:4 DL:41MiB ETA:2m39s]
+[#87a07f 5.3GiB/11GiB(45%) CN:4 DL:40MiB ETA:2m42s]
+[#87a07f 5.3GiB/11GiB(46%) CN:4 DL:40MiB ETA:2m40s]
+[#87a07f 5.4GiB/11GiB(46%) CN:4 DL:39MiB ETA:2m41s]
+[#87a07f 5.4GiB/11GiB(46%) CN:4 DL:39MiB ETA:2m41s]
+[#87a07f 5.5GiB/11GiB(47%) CN:4 DL:42MiB ETA:2m28s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:38 2026 *** 
+===============================================================================
+[#87a07f 5.5GiB/11GiB(47%) CN:4 DL:48MiB ETA:2m10s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 4.3GiB/7.4GiB(57%) CN:4 DL:0B]
+[#18eb07 4.3GiB/7.4GiB(58%) CN:4 DL:76MiB ETA:41s]
+[#18eb07 4.4GiB/7.4GiB(59%) CN:4 DL:77MiB ETA:39s]
+[#18eb07 4.5GiB/7.4GiB(60%) CN:4 DL:79MiB ETA:37s]
+[#18eb07 4.6GiB/7.4GiB(61%) CN:4 DL:78MiB ETA:37s]
+[#18eb07 4.7GiB/7.4GiB(62%) CN:4 DL:78MiB ETA:36s]
+[#18eb07 4.7GiB/7.4GiB(63%) CN:4 DL:78MiB ETA:35s]
+[#18eb07 4.8GiB/7.4GiB(64%) CN:4 DL:77MiB ETA:34s]
+[#18eb07 4.9GiB/7.4GiB(65%) CN:4 DL:77MiB ETA:33s]
+[#18eb07 4.9GiB/7.4GiB(66%) CN:4 DL:77MiB ETA:32s]
+[#18eb07 5.0GiB/7.4GiB(67%) CN:4 DL:77MiB ETA:32s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:48 2026 *** 
+===============================================================================
+[#18eb07 5.1GiB/7.4GiB(68%) CN:4 DL:77MiB ETA:31s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 5.5GiB/11GiB(47%) CN:4 DL:48MiB ETA:2m10s]
+[#87a07f 5.6GiB/11GiB(48%) CN:4 DL:53MiB ETA:1m56s]
+[#87a07f 5.7GiB/11GiB(48%) CN:4 DL:56MiB ETA:1m48s]
+[#87a07f 5.8GiB/11GiB(49%) CN:4 DL:56MiB ETA:1m47s]
+[#87a07f 5.8GiB/11GiB(50%) CN:4 DL:56MiB ETA:1m44s]
+[#87a07f 5.9GiB/11GiB(50%) CN:4 DL:61MiB ETA:1m36s]
+[#87a07f 6.0GiB/11GiB(51%) CN:4 DL:65MiB ETA:1m29s]
+[#87a07f 6.0GiB/11GiB(51%) CN:4 DL:68MiB ETA:1m23s]
+[#87a07f 6.1GiB/11GiB(52%) CN:4 DL:73MiB ETA:1m17s]
+[#87a07f 6.2GiB/11GiB(53%) CN:4 DL:73MiB ETA:1m16s]
+[#87a07f 6.2GiB/11GiB(53%) CN:4 DL:73MiB ETA:1m15s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:49 2026 *** 
+===============================================================================
+[#87a07f 6.3GiB/11GiB(54%) CN:4 DL:73MiB ETA:1m14s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 5.1GiB/7.4GiB(68%) CN:4 DL:77MiB ETA:31s]
+[#18eb07 5.2GiB/7.4GiB(69%) CN:4 DL:77MiB ETA:30s]
+[#18eb07 5.2GiB/7.4GiB(70%) CN:4 DL:20MiB ETA:1m50s]
+ *** Download Progress Summary as of Thu Jul 23 22:10:58 2026 *** 
+===============================================================================
+[#18eb07 5.3GiB/7.4GiB(71%) CN:4 DL:20MiB ETA:1m47s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 6.3GiB/11GiB(54%) CN:4 DL:73MiB ETA:1m14s]
+[#87a07f 6.3GiB/11GiB(54%) CN:4 DL:39MiB ETA:2m18s]
+[#87a07f 6.4GiB/11GiB(54%) CN:4 DL:34MiB ETA:2m37s]
+[#87a07f 6.4GiB/11GiB(55%) CN:4 DL:29MiB ETA:2m59s]
+[#87a07f 6.4GiB/11GiB(55%) CN:4 DL:24MiB ETA:3m38s]
+[#87a07f 6.5GiB/11GiB(55%) CN:4 DL:23MiB ETA:3m46s]
+[#87a07f 6.6GiB/11GiB(56%) CN:4 DL:44MiB ETA:1m56s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:00 2026 *** 
+===============================================================================
+[#87a07f 6.6GiB/11GiB(57%) CN:4 DL:50MiB ETA:1m42s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 5.3GiB/7.4GiB(71%) CN:4 DL:20MiB ETA:1m47s]
+[#18eb07 5.4GiB/7.4GiB(72%) CN:4 DL:20MiB ETA:1m43s]
+[#18eb07 5.5GiB/7.4GiB(73%) CN:4 DL:77MiB ETA:26s]
+[#18eb07 5.5GiB/7.4GiB(74%) CN:4 DL:77MiB ETA:25s]
+[#18eb07 5.6GiB/7.4GiB(75%) CN:4 DL:77MiB ETA:24s]
+[#18eb07 5.7GiB/7.4GiB(76%) CN:4 DL:78MiB ETA:22s]
+[#18eb07 5.8GiB/7.4GiB(77%) CN:4 DL:77MiB ETA:22s]
+[#18eb07 5.8GiB/7.4GiB(78%) CN:4 DL:78MiB ETA:20s]
+[#18eb07 5.9GiB/7.4GiB(79%) CN:4 DL:79MiB ETA:19s]
+[#18eb07 6.0GiB/7.4GiB(80%) CN:4 DL:79MiB ETA:18s]
+[#18eb07 6.1GiB/7.4GiB(81%) CN:4 DL:78MiB ETA:17s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:09 2026 *** 
+===============================================================================
+[#18eb07 6.1GiB/7.4GiB(82%) CN:4 DL:79MiB ETA:16s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 6.1GiB/7.4GiB(82%) CN:4 DL:79MiB ETA:16s]
+
+07/23 22:11:10 [[1;31mERROR[0m] CUID#8 - Download aborted. URI=https://huggingface.co/Comfy-Org/z_image_turbo/resolve/d24c4cf2a0cd98a42f23467e27e3d76ee9438b8e/split_files/text_encoders/qwen_3_4b.safetensors
+Exception: [AbstractCommand.cc:351] errorCode=22 URI=https://us.aws.cdn.hf.co/xet-bridge-us/692651442d28dcd60d675b85/f459cd74b7868799ea82f97601a650afcedc399596dc262f302e3505761c9995?user_id=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%27qwen_3_4b.safetensors%3B+filename%3D%22qwen_3_4b.safetensors%22%3B&X-Xet-Cas-Uid=public&Expires=1784848130&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNjkyNjUxNDQyZDI4ZGNkNjBkNjc1Yjg1L2Y0NTljZDc0Yjc4Njg3OTllYTgyZjk3NjAxYTY1MGFmY2VkYzM5OTU5NmRjMjYyZjMwMmUzNTA1NzYxYzk5OTVcXD91c2VyX2lkPXB1YmxpYyZyZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPWlubGluZSUzQitmaWxlbmFtZSUyQSUzRFVURi04JTI3JTI3cXdlbl8zXzRiLnNhZmV0ZW5zb3JzJTNCK2ZpbGVuYW1lJTNEJTIycXdlbl8zXzRiLnNhZmV0ZW5zb3JzJTIyJTNCJlgtWGV0LUNhcy1VaWQ9cHVibGljIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJFcG9jaFRpbWUiOjE3ODQ4NDgxMzB9LCJCeXRlUmFuZ2UiOnsiRXhwZWN0ZWRIZWFkZXIiOiJieXRlcz00MDIzMzg2MTEyLTYwMzQ1NTQ4NzkifX19XX0_&Signature=MEYCIQDe%7EJaPS7oUcZi3tMFh2QnCOjfe8R2n7w9RVgbzrbEOXAIhAI0wZXyCdt1ybdd7BxtmOfbfQTSQwjY%7EXLMMkFPpVYWD&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F
+  -> [HttpSkipResponseCommand.cc:239] errorCode=22 The response status is not successful. status=403
+[#18eb07 6.2GiB/7.4GiB(83%) CN:3 DL:79MiB ETA:15s]
+
+07/23 22:11:10 [[1;31mERROR[0m] CUID#9 - Download aborted. URI=https://huggingface.co/Comfy-Org/z_image_turbo/resolve/d24c4cf2a0cd98a42f23467e27e3d76ee9438b8e/split_files/text_encoders/qwen_3_4b.safetensors
+Exception: [AbstractCommand.cc:351] errorCode=22 URI=https://us.aws.cdn.hf.co/xet-bridge-us/692651442d28dcd60d675b85/f459cd74b7868799ea82f97601a650afcedc399596dc262f302e3505761c9995?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27qwen_3_4b.safetensors%3B+filename%3D%22qwen_3_4b.safetensors%22%3B&X-Xet-Cas-Uid=public&user_id=public&Expires=1784848130&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNjkyNjUxNDQyZDI4ZGNkNjBkNjc1Yjg1L2Y0NTljZDc0Yjc4Njg3OTllYTgyZjk3NjAxYTY1MGFmY2VkYzM5OTU5NmRjMjYyZjMwMmUzNTA1NzYxYzk5OTVcXD9yZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPWlubGluZSUzQitmaWxlbmFtZSUyQSUzRFVURi04JTI3JTI3cXdlbl8zXzRiLnNhZmV0ZW5zb3JzJTNCK2ZpbGVuYW1lJTNEJTIycXdlbl8zXzRiLnNhZmV0ZW5zb3JzJTIyJTNCJlgtWGV0LUNhcy1VaWQ9cHVibGljJnVzZXJfaWQ9cHVibGljIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJFcG9jaFRpbWUiOjE3ODQ4NDgxMzB9LCJCeXRlUmFuZ2UiOnsiRXhwZWN0ZWRIZWFkZXIiOiJieXRlcz0yMDEyMjE3MzQ0LTQwMjMzODYxMTEifX19XX0_&Signature=MEYCIQD7lDDewo3QxKkMnXpytQNYkmhXUIFzfod7RJZsDdntngIhAI23mV2r28jmrJ%7En4kYgENv-hcMhiYEhiAW6g8UPLB51&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F
+  -> [HttpSkipResponseCommand.cc:239] errorCode=22 The response status is not successful. status=403
+[#87a07f 6.6GiB/11GiB(57%) CN:4 DL:50MiB ETA:1m42s]
+[#87a07f 6.7GiB/11GiB(57%) CN:4 DL:53MiB ETA:1m34s]
+[#87a07f 6.8GiB/11GiB(58%) CN:4 DL:56MiB ETA:1m28s]
+[#87a07f 6.9GiB/11GiB(58%) CN:4 DL:58MiB ETA:1m23s]
+[#87a07f 6.9GiB/11GiB(59%) CN:4 DL:60MiB ETA:1m20s]
+[#87a07f 7.0GiB/11GiB(60%) CN:4 DL:65MiB ETA:1m12s]
+[#87a07f 7.1GiB/11GiB(60%) CN:4 DL:70MiB ETA:1m6s]
+[#87a07f 7.2GiB/11GiB(61%) CN:4 DL:76MiB ETA:1m]
+[#87a07f 7.2GiB/11GiB(62%) CN:4 DL:77MiB ETA:58s]
+[#87a07f 7.3GiB/11GiB(62%) CN:4 DL:77MiB ETA:57s]
+[#87a07f 7.4GiB/11GiB(63%) CN:4 DL:77MiB ETA:56s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:11 2026 *** 
+===============================================================================
+[#87a07f 7.4GiB/11GiB(63%) CN:4 DL:75MiB ETA:57s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 6.2GiB/7.4GiB(84%) CN:2 DL:73MiB ETA:16s]
+[#18eb07 6.3GiB/7.4GiB(84%) CN:2 DL:71MiB ETA:16s]
+[#18eb07 6.4GiB/7.4GiB(85%) CN:2 DL:71MiB ETA:15s]
+[#18eb07 6.5GiB/7.4GiB(86%) CN:2 DL:71MiB ETA:14s]
+[#18eb07 6.5GiB/7.4GiB(87%) CN:2 DL:69MiB ETA:13s]
+[#18eb07 6.6GiB/7.4GiB(88%) CN:2 DL:69MiB ETA:12s]
+[#18eb07 6.7GiB/7.4GiB(89%) CN:2 DL:69MiB ETA:11s]
+[#18eb07 6.7GiB/7.4GiB(90%) CN:2 DL:69MiB ETA:10s]
+[#18eb07 6.8GiB/7.4GiB(91%) CN:2 DL:68MiB ETA:9s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:20 2026 *** 
+===============================================================================
+[#18eb07 6.9GiB/7.4GiB(92%) CN:2 DL:64MiB ETA:9s]
+FILE: /runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 7.4GiB/11GiB(63%) CN:4 DL:75MiB ETA:57s]
+[#87a07f 7.5GiB/11GiB(64%) CN:4 DL:74MiB ETA:56s]
+[#87a07f 7.6GiB/11GiB(65%) CN:4 DL:75MiB ETA:55s]
+[#87a07f 7.7GiB/11GiB(65%) CN:4 DL:75MiB ETA:53s]
+[#87a07f 7.7GiB/11GiB(66%) CN:4 DL:75MiB ETA:52s]
+[#87a07f 7.8GiB/11GiB(67%) CN:4 DL:75MiB ETA:51s]
+[#87a07f 7.9GiB/11GiB(67%) CN:4 DL:74MiB ETA:51s]
+[#87a07f 8.0GiB/11GiB(68%) CN:4 DL:76MiB ETA:49s]
+[#87a07f 8.0GiB/11GiB(69%) CN:4 DL:75MiB ETA:48s]
+[#87a07f 8.1GiB/11GiB(69%) CN:4 DL:73MiB ETA:49s]
+[#87a07f 8.2GiB/11GiB(70%) CN:4 DL:78MiB ETA:45s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:22 2026 *** 
+===============================================================================
+[#87a07f 8.3GiB/11GiB(71%) CN:4 DL:79MiB ETA:43s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 8.3GiB/11GiB(71%) CN:4 DL:79MiB ETA:43s]
+[#87a07f 8.3GiB/11GiB(71%) CN:4 DL:76MiB ETA:44s]
+[#87a07f 8.4GiB/11GiB(72%) CN:4 DL:75MiB ETA:44s]
+[#87a07f 8.5GiB/11GiB(72%) CN:4 DL:73MiB ETA:44s]
+[#87a07f 8.5GiB/11GiB(73%) CN:4 DL:71MiB ETA:44s]
+[#87a07f 8.6GiB/11GiB(73%) CN:4 DL:72MiB ETA:43s]
+[#87a07f 8.6GiB/11GiB(74%) CN:4 DL:69MiB ETA:44s]
+[#87a07f 8.7GiB/11GiB(74%) CN:4 DL:68MiB ETA:43s]
+[#87a07f 8.8GiB/11GiB(75%) CN:4 DL:67MiB ETA:43s]
+[#87a07f 8.8GiB/11GiB(75%) CN:4 DL:60MiB ETA:48s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:32 2026 *** 
+===============================================================================
+[#87a07f 8.8GiB/11GiB(75%) CN:4 DL:56MiB ETA:51s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 8.8GiB/11GiB(75%) CN:4 DL:56MiB ETA:51s]
+[#87a07f 8.9GiB/11GiB(76%) CN:4 DL:54MiB ETA:52s]
+[#87a07f 8.9GiB/11GiB(76%) CN:4 DL:49MiB ETA:57s]
+[#87a07f 8.9GiB/11GiB(76%) CN:4 DL:45MiB ETA:1m1s]
+[#87a07f 8.9GiB/11GiB(76%) CN:4 DL:41MiB ETA:1m7s]
+[#87a07f 9.0GiB/11GiB(76%) CN:4 DL:36MiB ETA:1m15s]
+[#87a07f 9.0GiB/11GiB(77%) CN:4 DL:32MiB ETA:1m23s]
+[#87a07f 9.0GiB/11GiB(77%) CN:4 DL:30MiB ETA:1m28s]
+[#87a07f 9.0GiB/11GiB(77%) CN:4 DL:28MiB ETA:1m35s]
+[#87a07f 9.1GiB/11GiB(77%) CN:4 DL:28MiB ETA:1m33s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:42 2026 *** 
+===============================================================================
+[#87a07f 9.1GiB/11GiB(78%) CN:4 DL:27MiB ETA:1m35s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#18eb07 6.9GiB/7.4GiB(92%) CN:2 DL:64MiB ETA:9s]
+[#18eb07 6.9GiB/7.4GiB(93%) CN:2 DL:69MiB ETA:7s]
+[#18eb07 7.0GiB/7.4GiB(94%) CN:2 DL:70MiB ETA:6s]
+[#18eb07 7.0GiB/7.4GiB(94%) CN:2 DL:68MiB ETA:5s]
+[#18eb07 7.1GiB/7.4GiB(95%) CN:2 DL:68MiB ETA:4s]
+[#18eb07 7.2GiB/7.4GiB(96%) CN:2 DL:66MiB ETA:4s]
+[#18eb07 7.2GiB/7.4GiB(97%) CN:2 DL:63MiB ETA:3s]
+[#18eb07 7.3GiB/7.4GiB(98%) CN:2 DL:63MiB ETA:2s]
+[#18eb07 7.4GiB/7.4GiB(98%) CN:2 DL:61MiB ETA:1s]
+[#18eb07 7.4GiB/7.4GiB(99%) CN:2 DL:60MiB]
+
+Download Results:
+gid   |stat|avg speed  |path/URI
+======+====+===========+=======================================================
+18eb07|OK  |    48MiB/s|/runpod-volume/models/text_encoders/qwen_3_4b.safetensors.part
+
+Status Legend:
+(OK):download completed.
+[#87a07f 9.1GiB/11GiB(78%) CN:4 DL:27MiB ETA:1m35s]
+[#87a07f 9.1GiB/11GiB(78%) CN:4 DL:25MiB ETA:1m40s]
+[#87a07f 9.1GiB/11GiB(78%) CN:4 DL:26MiB ETA:1m38s]
+[#87a07f 9.2GiB/11GiB(78%) CN:4 DL:27MiB ETA:1m32s]
+[#87a07f 9.2GiB/11GiB(79%) CN:4 DL:27MiB ETA:1m30s]
+[#87a07f 9.2GiB/11GiB(79%) CN:4 DL:27MiB ETA:1m29s]
+[#87a07f 9.2GiB/11GiB(79%) CN:4 DL:26MiB ETA:1m31s]
+[#87a07f 9.3GiB/11GiB(79%) CN:4 DL:25MiB ETA:1m34s]
+[#87a07f 9.3GiB/11GiB(79%) CN:4 DL:25MiB ETA:1m36s]
+[#87a07f 9.3GiB/11GiB(80%) CN:4 DL:25MiB ETA:1m34s]
+ *** Download Progress Summary as of Thu Jul 23 22:11:52 2026 *** 
+===============================================================================
+[#87a07f 9.3GiB/11GiB(80%) CN:4 DL:25MiB ETA:1m31s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 9.3GiB/11GiB(80%) CN:4 DL:25MiB ETA:1m31s]
+[#87a07f 9.4GiB/11GiB(80%) CN:4 DL:25MiB ETA:1m30s]
+[#87a07f 9.4GiB/11GiB(80%) CN:4 DL:25MiB ETA:1m29s]
+[#87a07f 9.4GiB/11GiB(80%) CN:4 DL:24MiB ETA:1m31s]
+[#87a07f 9.4GiB/11GiB(81%) CN:4 DL:25MiB ETA:1m29s]
+[#87a07f 9.5GiB/11GiB(81%) CN:4 DL:25MiB ETA:1m25s]
+[#87a07f 9.5GiB/11GiB(81%) CN:4 DL:26MiB ETA:1m22s]
+[#87a07f 9.5GiB/11GiB(81%) CN:4 DL:26MiB ETA:1m21s]
+[#87a07f 9.6GiB/11GiB(82%) CN:4 DL:26MiB ETA:1m19s]
+[#87a07f 9.6GiB/11GiB(82%) CN:4 DL:26MiB ETA:1m19s]
+ *** Download Progress Summary as of Thu Jul 23 22:12:02 2026 *** 
+===============================================================================
+[#87a07f 9.6GiB/11GiB(82%) CN:4 DL:26MiB ETA:1m19s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 9.6GiB/11GiB(82%) CN:4 DL:26MiB ETA:1m19s]
+[#87a07f 9.6GiB/11GiB(82%) CN:4 DL:27MiB ETA:1m16s]
+[#87a07f 9.7GiB/11GiB(82%) CN:4 DL:27MiB ETA:1m15s]
+[#87a07f 9.7GiB/11GiB(83%) CN:4 DL:26MiB ETA:1m15s]
+[#87a07f 9.7GiB/11GiB(83%) CN:4 DL:26MiB ETA:1m15s]
+[#87a07f 9.7GiB/11GiB(83%) CN:4 DL:25MiB ETA:1m17s]
+[#87a07f 9.8GiB/11GiB(83%) CN:4 DL:24MiB ETA:1m18s]
+[#87a07f 9.8GiB/11GiB(84%) CN:4 DL:25MiB ETA:1m15s]
+[#87a07f 9.8GiB/11GiB(84%) CN:4 DL:25MiB ETA:1m14s]
+[#87a07f 9.8GiB/11GiB(84%) CN:4 DL:25MiB ETA:1m13s]
+ *** Download Progress Summary as of Thu Jul 23 22:12:12 2026 *** 
+===============================================================================
+[#87a07f 9.9GiB/11GiB(84%) CN:4 DL:25MiB ETA:1m13s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 9.9GiB/11GiB(84%) CN:4 DL:25MiB ETA:1m13s]
+[#87a07f 9.9GiB/11GiB(84%) CN:4 DL:24MiB ETA:1m15s]
+[#87a07f 9.9GiB/11GiB(85%) CN:4 DL:25MiB ETA:1m11s]
+[#87a07f 9.9GiB/11GiB(85%) CN:4 DL:26MiB ETA:1m6s]
+[#87a07f 10GiB/11GiB(85%) CN:4 DL:26MiB ETA:1m6s]
+[#87a07f 10GiB/11GiB(85%) CN:4 DL:26MiB ETA:1m4s]
+[#87a07f 10GiB/11GiB(86%) CN:4 DL:26MiB ETA:1m3s]
+[#87a07f 10GiB/11GiB(86%) CN:4 DL:26MiB ETA:1m3s]
+[#87a07f 10GiB/11GiB(86%) CN:4 DL:26MiB ETA:1m]
+[#87a07f 10GiB/11GiB(86%) CN:4 DL:27MiB ETA:58s]
+ *** Download Progress Summary as of Thu Jul 23 22:12:22 2026 *** 
+===============================================================================
+[#87a07f 10GiB/11GiB(87%) CN:4 DL:28MiB ETA:53s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 10GiB/11GiB(87%) CN:4 DL:28MiB ETA:53s]
+[#87a07f 10GiB/11GiB(87%) CN:4 DL:30MiB ETA:49s]
+[#87a07f 10GiB/11GiB(87%) CN:4 DL:29MiB ETA:50s]
+[#87a07f 10GiB/11GiB(87%) CN:4 DL:30MiB ETA:48s]
+[#87a07f 10GiB/11GiB(88%) CN:4 DL:32MiB ETA:42s]
+[#87a07f 10GiB/11GiB(88%) CN:4 DL:32MiB ETA:41s]
+[#87a07f 10GiB/11GiB(88%) CN:4 DL:33MiB ETA:40s]
+[#87a07f 10GiB/11GiB(88%) CN:4 DL:33MiB ETA:39s]
+[#87a07f 10GiB/11GiB(89%) CN:4 DL:33MiB ETA:38s]
+[#87a07f 10GiB/11GiB(89%) CN:4 DL:33MiB ETA:37s]
+ *** Download Progress Summary as of Thu Jul 23 22:12:32 2026 *** 
+===============================================================================
+[#87a07f 10GiB/11GiB(89%) CN:4 DL:32MiB ETA:37s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 10GiB/11GiB(89%) CN:4 DL:32MiB ETA:37s]
+[#87a07f 10GiB/11GiB(90%) CN:4 DL:32MiB ETA:36s]
+[#87a07f 10GiB/11GiB(90%) CN:4 DL:32MiB ETA:35s]
+[#87a07f 10GiB/11GiB(90%) CN:4 DL:30MiB ETA:37s]
+[#87a07f 10GiB/11GiB(90%) CN:4 DL:28MiB ETA:38s]
+[#87a07f 10GiB/11GiB(90%) CN:4 DL:28MiB ETA:37s]
+[#87a07f 10GiB/11GiB(91%) CN:4 DL:29MiB ETA:35s]
+[#87a07f 10GiB/11GiB(91%) CN:4 DL:29MiB ETA:34s]
+[#87a07f 10GiB/11GiB(91%) CN:4 DL:28MiB ETA:35s]
+[#87a07f 10GiB/11GiB(91%) CN:4 DL:27MiB ETA:35s]
+ *** Download Progress Summary as of Thu Jul 23 22:12:42 2026 *** 
+===============================================================================
+[#87a07f 10GiB/11GiB(92%) CN:4 DL:26MiB ETA:36s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 10GiB/11GiB(92%) CN:4 DL:26MiB ETA:36s]
+[#87a07f 10GiB/11GiB(92%) CN:4 DL:25MiB ETA:36s]
+[#87a07f 10GiB/11GiB(92%) CN:4 DL:25MiB ETA:35s]
+[#87a07f 10GiB/11GiB(92%) CN:4 DL:25MiB ETA:34s]
+[#87a07f 10GiB/11GiB(92%) CN:4 DL:25MiB ETA:33s]
+[#87a07f 10GiB/11GiB(93%) CN:4 DL:25MiB ETA:32s]
+[#87a07f 10GiB/11GiB(93%) CN:4 DL:25MiB ETA:31s]
+[#87a07f 10GiB/11GiB(93%) CN:4 DL:24MiB ETA:31s]
+[#87a07f 10GiB/11GiB(93%) CN:4 DL:24MiB ETA:30s]
+[#87a07f 11GiB/11GiB(94%) CN:4 DL:25MiB ETA:27s]
+ *** Download Progress Summary as of Thu Jul 23 22:12:52 2026 *** 
+===============================================================================
+[#87a07f 11GiB/11GiB(94%) CN:4 DL:26MiB ETA:26s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 11GiB/11GiB(94%) CN:4 DL:26MiB ETA:26s]
+[#87a07f 11GiB/11GiB(94%) CN:4 DL:26MiB ETA:25s]
+[#87a07f 11GiB/11GiB(94%) CN:4 DL:26MiB ETA:24s]
+[#87a07f 11GiB/11GiB(94%) CN:4 DL:26MiB ETA:23s]
+[#87a07f 11GiB/11GiB(95%) CN:4 DL:26MiB ETA:22s]
+[#87a07f 11GiB/11GiB(95%) CN:4 DL:26MiB ETA:21s]
+[#87a07f 11GiB/11GiB(95%) CN:4 DL:26MiB ETA:20s]
+[#87a07f 11GiB/11GiB(95%) CN:4 DL:26MiB ETA:18s]
+[#87a07f 11GiB/11GiB(95%) CN:4 DL:26MiB ETA:18s]
+[#87a07f 11GiB/11GiB(96%) CN:4 DL:25MiB ETA:17s]
+ *** Download Progress Summary as of Thu Jul 23 22:13:03 2026 *** 
+===============================================================================
+[#87a07f 11GiB/11GiB(96%) CN:4 DL:25MiB ETA:16s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 11GiB/11GiB(96%) CN:4 DL:25MiB ETA:16s]
+[#87a07f 11GiB/11GiB(96%) CN:4 DL:25MiB ETA:15s]
+[#87a07f 11GiB/11GiB(96%) CN:4 DL:26MiB ETA:14s]
+[#87a07f 11GiB/11GiB(97%) CN:4 DL:26MiB ETA:13s]
+[#87a07f 11GiB/11GiB(97%) CN:4 DL:26MiB ETA:12s]
+[#87a07f 11GiB/11GiB(97%) CN:4 DL:25MiB ETA:11s]
+[#87a07f 11GiB/11GiB(97%) CN:4 DL:27MiB ETA:9s]
+[#87a07f 11GiB/11GiB(98%) CN:4 DL:27MiB ETA:8s]
+[#87a07f 11GiB/11GiB(98%) CN:4 DL:27MiB ETA:7s]
+[#87a07f 11GiB/11GiB(98%) CN:4 DL:27MiB ETA:6s]
+
+07/23 22:13:13 [[1;31mERROR[0m] CUID#9 - Download aborted. URI=https://huggingface.co/publikey/cyberrealistic-z-image-turbo/resolve/c2eade2d19be3c9b2d51ecac4820dcfde23ccf99/cyberrealisticZImage_v50.safetensors
+Exception: [AbstractCommand.cc:351] errorCode=22 URI=https://us.aws.cdn.hf.co/xet-bridge-us/6a22d0edab2b347919b19dcb/be5c8f0f0162b9651a951347f1dcc8625e3a426babcf8817136eb6ae37a80d68?user_id=public&X-Xet-Cas-Uid=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%27cyberrealisticZImage_v50.safetensors%3B+filename%3D%22cyberrealisticZImage_v50.safetensors%22%3B&Expires=1784848130&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmEyMmQwZWRhYjJiMzQ3OTE5YjE5ZGNiL2JlNWM4ZjBmMDE2MmI5NjUxYTk1MTM0N2YxZGNjODYyNWUzYTQyNmJhYmNmODgxNzEzNmViNmFlMzdhODBkNjhcXD91c2VyX2lkPXB1YmxpYyZYLVhldC1DYXMtVWlkPXB1YmxpYyZyZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPWlubGluZSUzQitmaWxlbmFtZSUyQSUzRFVURi04JTI3JTI3Y3liZXJyZWFsaXN0aWNaSW1hZ2VfdjUwLnNhZmV0ZW5zb3JzJTNCK2ZpbGVuYW1lJTNEJTIyY3liZXJyZWFsaXN0aWNaSW1hZ2VfdjUwLnNhZmV0ZW5zb3JzJTIyJTNCIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJFcG9jaFRpbWUiOjE3ODQ4NDgxMzB9LCJCeXRlUmFuZ2UiOnsiRXhwZWN0ZWRIZWFkZXIiOiJieXRlcz0zMTQxNTMzNjk2LTYyODMwNjczOTEifX19XX0_&Signature=MEUCIQDISb2bae5LqfdeRXTQgtmOgmBuKaxWWkA369AcGVI%7EBwIgFPQ%7EAnAZM9yZhkcR2QRBECwPbKh5Trs8mdiYgSTljXs_&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F
+  -> [HttpSkipResponseCommand.cc:239] errorCode=22 The response status is not successful. status=403
+ *** Download Progress Summary as of Thu Jul 23 22:13:13 2026 *** 
+===============================================================================
+[#87a07f 11GiB/11GiB(98%) CN:3 DL:28MiB ETA:5s]
+FILE: /runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+-------------------------------------------------------------------------------
+
+[#87a07f 11GiB/11GiB(98%) CN:3 DL:28MiB ETA:5s]
+[#87a07f 11GiB/11GiB(99%) CN:3 DL:28MiB ETA:4s]
+[#87a07f 11GiB/11GiB(99%) CN:3 DL:27MiB ETA:3s]
+[#87a07f 11GiB/11GiB(99%) CN:3 DL:27MiB ETA:2s]
+
+07/23 22:13:16 [[1;31mERROR[0m] CUID#10 - Download aborted. URI=https://huggingface.co/publikey/cyberrealistic-z-image-turbo/resolve/c2eade2d19be3c9b2d51ecac4820dcfde23ccf99/cyberrealisticZImage_v50.safetensors
+Exception: [AbstractCommand.cc:351] errorCode=22 URI=https://us.aws.cdn.hf.co/xet-bridge-us/6a22d0edab2b347919b19dcb/be5c8f0f0162b9651a951347f1dcc8625e3a426babcf8817136eb6ae37a80d68?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27cyberrealisticZImage_v50.safetensors%3B+filename%3D%22cyberrealisticZImage_v50.safetensors%22%3B&user_id=public&X-Xet-Cas-Uid=public&Expires=1784848130&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmEyMmQwZWRhYjJiMzQ3OTE5YjE5ZGNiL2JlNWM4ZjBmMDE2MmI5NjUxYTk1MTM0N2YxZGNjODYyNWUzYTQyNmJhYmNmODgxNzEzNmViNmFlMzdhODBkNjhcXD9yZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPWlubGluZSUzQitmaWxlbmFtZSUyQSUzRFVURi04JTI3JTI3Y3liZXJyZWFsaXN0aWNaSW1hZ2VfdjUwLnNhZmV0ZW5zb3JzJTNCK2ZpbGVuYW1lJTNEJTIyY3liZXJyZWFsaXN0aWNaSW1hZ2VfdjUwLnNhZmV0ZW5zb3JzJTIyJTNCJnVzZXJfaWQ9cHVibGljJlgtWGV0LUNhcy1VaWQ9cHVibGljIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJFcG9jaFRpbWUiOjE3ODQ4NDgxMzB9LCJCeXRlUmFuZ2UiOnsiRXhwZWN0ZWRIZWFkZXIiOiJieXRlcz05NDI0NjAxMDg4LTEyNTY2MDQ0MDcxIn19fV19&Signature=MEUCIQCyCbuFhHh-AAfMJYqWuAao8qK5yN7AwszXFRWKN4ugvgIgIc4iSe%7EsDzNmObqO-CU7T3g%7EkhnXyZOnizPVG9BvvkU_&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F
+  -> [HttpSkipResponseCommand.cc:239] errorCode=22 The response status is not successful. status=403
+[#87a07f 11GiB/11GiB(99%) CN:2 DL:28MiB ETA:1s]
+[#87a07f 11GiB/11GiB(99%) CN:2 DL:27MiB]
+
+Download Results:
+gid   |stat|avg speed  |path/URI
+======+====+===========+=======================================================
+87a07f|OK  |    44MiB/s|/runpod-volume/models/diffusion_models/cyberrealisticZImage_v50.safetensors.part
+
+Status Legend:
+(OK):download completed.
+ComfyUI device: cuda:0 NVIDIA H100 80GB HBM3 : cudaMallocAsync
+Rendering shot 1/3: Standing Before Bed
+Generating start keyframe for shot 1: Standing Before Bed
+Terminating pod 7ejdfaph9unfc4
+Error: ComfyUI rejected the workflow: {"error": {"type": "prompt_outputs_failed_validation", "message": "Prompt outputs failed validation", "details": "", "extra_info": {}}, "node_errors": {"11": {"errors": [{"type": "value_not_in_list", "message": "Value not in list", "details": "clip_name: 'qwen_3_4b.safetensors' not in ['umt5_xxl_fp8_e4m3fn_scaled.safetensors']", "extra_info": {"input_name": "clip_name", "input_config": [["umt5_xxl_fp8_e4m3fn_scaled.safetensors"], {}], "received_value": "qwen_3_4b.safetensors"}}], "dependent_outputs": ["9"], "class_type": "CLIPLoader"}, "4": {"errors": [{"type": "value_not_in_list", "message": "Value not in list", "details": "unet_name: 'cyberrealisticZImage_v50.safetensors' not in ['wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors', 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors']", "extra_info": {"input_name": "unet_name", "input_config": [["wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"], {}], "received_value": "cyberrealisticZImage_v50.safetensors"}}], "dependent_outputs": ["9"], "class_type": "UNETLoader"}}}

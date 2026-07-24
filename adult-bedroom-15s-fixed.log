@@ -1,0 +1,94 @@
+Scene: Cozy Bedroom
+Format: 576x800 at 16 FPS
+Sampling: 20 steps, transition at 10
+Shots: 3, approximately 15.2 seconds
+Global prompt: The same fictional adult woman, age 28, blonde hair, slender adult body, small natural breasts, gentle slightly shy adult expression, wearing a matte black bra and matching black briefs with minimal smooth lace trim, in the same cozy warmly lit bedroom with a bed, soft blankets and green plants, realistic cinematic photography, stable identity, stable body proportions, natural skin texture, continuous slow sensual movement
+Negative prompt: minor, underage, teenager, adolescent, childlike, identity drift, changing face, changing hair, changing room, extra breasts, extra nipples, malformed breasts, distorted anatomy, extra limbs, fused fingers, broken hands, flicker, jitter, sudden scene cut, camera shake, blur, low quality
+  001 Standing Before Bed: 81 frames, seed 22001, start generated with z_image_turbo (cyberrealisticZImage_v50.safetensors) at 864x1200
+      Action: She stands directly in front of the bed facing the camera, maintains soft eye contact, breathes naturally, then slowly begins to sit down on the edge of the bed, her blonde hair and black underwear move naturally, the bra and briefs remain securely worn throughout this shot
+      Camera: locked frontal medium full shot, camera at chest height, symmetrical composition, no camera movement
+  002 Sitting On Bed: 81 frames, seed 22002, start previous shot's last frame
+      Action: Now seated on the edge of the bed and still facing the camera, she adjusts her posture, gives a gentle slightly shy adult smile, slowly reaches behind her back and carefully unfastens the black bra, natural deliberate hand movement, the bra remains on her body until the clasp is fully unfastened
+      Camera: locked frontal medium shot, unobstructed view of her upper body, no camera movement
+  003 Removing Bra: 81 frames, seed 22003, start previous shot's last frame
+      Action: Still seated and facing the camera, the adult woman slowly slides both bra straps from her shoulders and gently removes the black bra, revealing her small natural breasts, she holds the removed bra beside her and maintains a gentle sensual adult expression, subtle natural breathing, realistic body movement
+      Camera: locked frontal medium shot, clear unobstructed view, no zoom, no camera movement
+Network volume: n2em0msg5a (reused)
+Pod 4age25kpmaiaau created
+[1/7] Ensuring models/unet/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+[2/7] Ensuring models/unet/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+[3/7] Ensuring models/clip/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+[4/7] Ensuring models/vae/wan_2.1_vae.safetensors
+[5/7] Ensuring models/diffusion_models/cyberrealisticZImage_v50.safetensors
+[6/7] Ensuring models/text_encoders/qwen_3_4b.safetensors
+[7/7] Ensuring models/vae/ae.safetensors
+W: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease: Key is stored in legacy trusted.gpg keyring (/etc/apt/trusted.gpg), see the DEPRECATION section in apt-key(8) for details.
+debconf: delaying package configuration, since apt-utils is not installed
+Selecting previously unselected package libcares2:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 30685 files and directories currently installed.)
+Preparing to unpack .../libcares2_1.27.0-1.0ubuntu1_amd64.deb ...
+Unpacking libcares2:amd64 (1.27.0-1.0ubuntu1) ...
+Selecting previously unselected package libssh2-1t64:amd64.
+Preparing to unpack .../libssh2-1t64_1.11.0-4.1ubuntu0.24.04.3_amd64.deb ...
+Unpacking libssh2-1t64:amd64 (1.11.0-4.1ubuntu0.24.04.3) ...
+Selecting previously unselected package libaria2-0:amd64.
+Preparing to unpack .../libaria2-0_1.37.0+debian-1build3_amd64.deb ...
+Unpacking libaria2-0:amd64 (1.37.0+debian-1build3) ...
+Selecting previously unselected package aria2.
+Preparing to unpack .../aria2_1.37.0+debian-1build3_amd64.deb ...
+Unpacking aria2 (1.37.0+debian-1build3) ...
+Setting up libcares2:amd64 (1.27.0-1.0ubuntu1) ...
+Setting up libssh2-1t64:amd64 (1.11.0-4.1ubuntu0.24.04.3) ...
+Setting up libaria2-0:amd64 (1.37.0+debian-1build3) ...
+Setting up aria2 (1.37.0+debian-1build3) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.3) ...
+ComfyUI device: cuda:0 NVIDIA H100 80GB HBM3 : cudaMallocAsync
+Rendering shot 1/3: Standing Before Bed
+Generating start keyframe for shot 1: Standing Before Bed
+[start image 1/3] ComfyUI prompt: 08901c77-dd10-424b-a909-a3a26fb3f488
+[start image 1/3] ComfyUI node 12: VAELoader
+[start image 1/3] ComfyUI node 5: EmptySD3LatentImage
+[start image 1/3] ComfyUI node 11: CLIPLoader
+[start image 1/3] ComfyUI node 6: CLIPTextEncode
+[start image 1/3] ComfyUI node 7: ConditioningZeroOut
+[start image 1/3] ComfyUI node 4: UNETLoader
+[start image 1/3] ComfyUI node 10: ModelSamplingAuraFlow
+[start image 1/3] ComfyUI node 3: KSampler
+[start image 1/3] ComfyUI progress 3 KSampler: 1/8 (12%)
+[start image 1/3] ComfyUI progress 3 KSampler: 3/8 (38%)
+[start image 1/3] ComfyUI progress 3 KSampler: 4/8 (50%)
+[start image 1/3] ComfyUI progress 3 KSampler: 5/8 (62%)
+[start image 1/3] ComfyUI progress 3 KSampler: 6/8 (75%)
+[start image 1/3] ComfyUI progress 3 KSampler: 7/8 (88%)
+[start image 1/3] ComfyUI progress 3 KSampler: 8/8 (100%)
+[start image 1/3] ComfyUI node 8: VAEDecode
+[start image 1/3] ComfyUI node 9: SaveImage
+[start image 1/3] ComfyUI execution completed
+Generated start keyframe: output/adult-bedroom-15s-fixed/generated-start-images/001-standing-before-bed_00001_.png
+Uploaded start keyframe: scene-001-start.png
+[shot 1/3] ComfyUI prompt: da68750e-8d5b-497a-b3dd-43a521c843db
+[shot 1/3] ComfyUI node 39: VAELoader
+[shot 1/3] ComfyUI node 56: UNETLoader
+[shot 1/3] ComfyUI node 55: ModelSamplingSD3
+[shot 1/3] ComfyUI node 37: UNETLoader
+[shot 1/3] ComfyUI node 54: ModelSamplingSD3
+[shot 1/3] ComfyUI node 52: LoadImage
+[shot 1/3] ComfyUI node 38: CLIPLoader
+[shot 1/3] ComfyUI node 7: CLIPTextEncode
+[shot 1/3] ComfyUI node 6: CLIPTextEncode
+[shot 1/3] ComfyUI node 50: WanImageToVideo
+[shot 1/3] ComfyUI node 57: KSamplerAdvanced
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 1/10 (10%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 2/10 (20%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 3/10 (30%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 4/10 (40%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 5/10 (50%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 6/10 (60%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 7/10 (70%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 8/10 (80%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 9/10 (90%)
+[shot 1/3] ComfyUI progress 57 KSamplerAdvanced: 10/10 (100%)
+[shot 1/3] ComfyUI node 58: KSamplerAdvanced
+[shot 1/3] ComfyUI progress stream ended; using history polling: Connection to remote host was lost.
+Terminating pod 4age25kpmaiaau
+Error: [Errno 111] Connection refused
