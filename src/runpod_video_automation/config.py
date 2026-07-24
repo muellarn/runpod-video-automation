@@ -46,6 +46,8 @@ class Profile:
     max_hourly_cost: float
     models: tuple[ModelFile, ...]
     start_image_models: tuple[ModelFile, ...]
+    system_packages: tuple[str, ...] = ()
+    comfy_args: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, path: Path) -> Profile:
@@ -70,6 +72,17 @@ class Profile:
         start_image_models = data.get("start_image_models", [])
         if not isinstance(start_image_models, list):
             raise ValueError("Profile field 'start_image_models' must be a list")
+        system_packages = data.get("system_packages", [])
+        if not isinstance(system_packages, list) or not all(
+            isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9.+-]+", item)
+            for item in system_packages
+        ):
+            raise ValueError("Profile field 'system_packages' must be a package-name list")
+        comfy_args = data.get("comfy_args", [])
+        if not isinstance(comfy_args, list) or not all(
+            isinstance(item, str) and item.startswith("--") for item in comfy_args
+        ):
+            raise ValueError("Profile field 'comfy_args' must be a CLI argument list")
         max_hourly_cost = float(data.get("max_hourly_cost", 3.0))
         if max_hourly_cost <= 0:
             raise ValueError("Profile field 'max_hourly_cost' must be positive")
@@ -88,4 +101,6 @@ class Profile:
             start_image_models=tuple(
                 ModelFile.from_dict(item) for item in start_image_models
             ),
+            system_packages=tuple(system_packages),
+            comfy_args=tuple(comfy_args),
         )

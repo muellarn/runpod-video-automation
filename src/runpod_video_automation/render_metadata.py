@@ -115,6 +115,7 @@ def build_shot_inputs(
         },
         "runtime": {
             "container_image": profile.image,
+            "comfy_args": list(profile.comfy_args),
             "video_workflow_sha256": video_workflow_sha256,
             "start_workflow_sha256": start_workflow_sha256,
             "video_models": [_model(model) for model in profile.models],
@@ -141,6 +142,7 @@ def build_start_image_inputs(
         "generation": asdict(shot.generate_start_image),
         "runtime": {
             "container_image": profile.image,
+            "comfy_args": list(profile.comfy_args),
             "start_workflow_sha256": start_workflow_sha256,
             "start_image_models": [
                 _model(model) for model in profile.start_image_models

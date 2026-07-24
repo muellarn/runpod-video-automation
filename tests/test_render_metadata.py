@@ -49,6 +49,7 @@ def _scene(prompt: str = "Walks forward") -> tuple[Scene, Shot, Profile]:
         max_hourly_cost=1,
         models=(ModelFile("https://example.test/model", "models/unet/model", 1),),
         start_image_models=(),
+        comfy_args=("--enable-triton-backend",),
     )
     return scene, shot, profile
 
@@ -90,6 +91,7 @@ def test_shot_metadata_round_trip_and_detects_input_change(tmp_path: Path) -> No
 
     assert reused_video == video
     assert differences == []
+    assert inputs["runtime"]["comfy_args"] == ["--enable-triton-backend"]
     changed_scene, changed_shot, _ = _scene("Turns around")
     changed_inputs = build_shot_inputs(
         changed_scene,

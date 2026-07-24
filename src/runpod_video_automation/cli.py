@@ -291,6 +291,13 @@ def _worker_session(
             )
             remote.wait_for_ssh()
             remote.ensure_models(models if models is not None else profile.models)
+            if profile.comfy_args:
+                remote.ensure_comfy_args(
+                    profile.comfy_args,
+                    system_packages=profile.system_packages,
+                )
+            elif profile.system_packages:
+                remote.ensure_system_packages(profile.system_packages)
             with remote.comfy_tunnel() as base_url:
                 comfy = ComfyClient(base_url)
                 try:
