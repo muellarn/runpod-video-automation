@@ -32,6 +32,9 @@ class FakeStorage:
         value = self.objects.get(key)
         return len(value) if value is not None else None
 
+    def object_sha256(self, key: str) -> str:
+        return hashlib.sha256(self.objects[key]).hexdigest()
+
     def create_multipart_upload(self, key: str) -> str:
         self.uploads[key] = []
         return "upload-1"
@@ -144,3 +147,26 @@ def test_prewarm_uploads_models_in_parallel_and_commits_marker_last(
 
     assert storage.json_writes[-1] == plan.marker_key
     assert cache.require_complete((first, second)) == plan
+
+
+def test_prewarm_adopts_matching_unmarked_s3_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = b"already complete"
+    model = _model(data)
+    storage = FakeStorage()
+    storage.objects[model.path] = data
+    cache = ModelCache(storage, source_client=httpx.Client())
+    monkeypatch.setattr(
+        cache,
+        "_upload_model",
+        lambda selected: pytest.fail(f"Unexpected upload: {selected.path}"),
+    )
+
+    plan = cache.prewarm((model,))
+
+    assert cache.require_complete((model,)) == plan
+    assert storage.json_writes == [
+        f".runpod-video/model-objects/{model.sha256}.json",
+        plan.marker_key,
+    ]

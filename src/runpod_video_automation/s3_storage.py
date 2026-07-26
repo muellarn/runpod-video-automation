@@ -96,6 +96,19 @@ class NetworkVolumeStorage:
             raise RuntimeError(f"S3 object {key!r} is not a JSON object")
         return value
 
+    def object_sha256(self, key: str) -> str:
+        response = self._client.get_object(Bucket=self.volume_id, Key=key)
+        body = response["Body"]
+        digest = hashlib.sha256()
+        try:
+            while chunk := body.read(_PART_SIZE):
+                digest.update(chunk)
+        finally:
+            close = getattr(body, "close", None)
+            if close is not None:
+                close()
+        return digest.hexdigest()
+
     def put_json(self, key: str, value: dict[str, Any]) -> None:
         body = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
         self._client.put_object(
@@ -183,8 +196,13 @@ class NetworkVolumeStorage:
         )
 
     def abort_multipart_upload(self, key: str, upload_id: str) -> None:
-        self._client.abort_multipart_upload(
-            Bucket=self.volume_id,
-            Key=key,
-            UploadId=upload_id,
-        )
+        try:
+            self._client.abort_multipart_upload(
+                Bucket=self.volume_id,
+                Key=key,
+                UploadId=upload_id,
+            )
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            if code != "NoSuchUpload":
+                raise

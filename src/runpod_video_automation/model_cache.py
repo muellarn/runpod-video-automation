@@ -144,10 +144,19 @@ class ModelCache:
 
     def _object_is_verified(self, model: ModelFile) -> bool:
         marker = self.storage.get_json(_object_marker_key(model))
-        return (
+        marked = (
             marker == _model_record(model)
             and self.storage.object_size(model.path) == model.size
         )
+        if marked:
+            return True
+        if self.storage.object_size(model.path) != model.size:
+            return False
+        assert model.sha256 is not None
+        if self.storage.object_sha256(model.path) != model.sha256:
+            return False
+        self.storage.put_json(_object_marker_key(model), _model_record(model))
+        return True
 
     def _upload_model(self, model: ModelFile) -> None:
         assert model.size is not None

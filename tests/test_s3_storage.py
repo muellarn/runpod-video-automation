@@ -1,8 +1,10 @@
+import hashlib
 import os
 from io import BytesIO
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 
 from runpod_video_automation.s3_storage import (
     NetworkVolumeStorage,
@@ -84,6 +86,7 @@ def test_storage_streams_file_upload_and_download(tmp_path: Path) -> None:
 
     uploaded = storage.upload_file("runs/input.bin", source)
     client.download = b"rendered output"
+    remote_sha256 = storage.object_sha256("runs/output.bin")
     downloaded = storage.download_file("runs/output.bin", target)
 
     assert b"".join(client.parts) == b"staged input"
@@ -91,6 +94,7 @@ def test_storage_streams_file_upload_and_download(tmp_path: Path) -> None:
     assert uploaded[0] == len(b"staged input")
     assert target.read_bytes() == b"rendered output"
     assert downloaded[0] == len(b"rendered output")
+    assert remote_sha256 == hashlib.sha256(b"rendered output").hexdigest()
 
 
 def test_storage_aborts_failed_file_upload(
@@ -110,3 +114,23 @@ def test_storage_aborts_failed_file_upload(
         storage.upload_file("runs/input.bin", source)
 
     assert client.aborted is True
+
+
+def test_storage_treats_missing_multipart_upload_as_already_aborted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    storage = _storage(client)
+
+    def missing(**kwargs) -> None:
+        raise ClientError(
+            {
+                "Error": {"Code": "NoSuchUpload", "Message": "missing"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            "AbortMultipartUpload",
+        )
+
+    monkeypatch.setattr(client, "abort_multipart_upload", missing)
+
+    storage.abort_multipart_upload("models/model.bin", "missing-upload")
