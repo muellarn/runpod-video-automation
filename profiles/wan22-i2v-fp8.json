@@ -1,6 +1,6 @@
 {
   "name": "wan22-i2v-fp8",
-  "image": "ghcr.io/muellarn/runpod-video-automation:main",
+  "image": "ghcr.io/muellarn/runpod-video-automation@sha256:3c8036b8d9c40e886170756ff6a003aedc31057e44fdc333ddfe5e799f34b789",
   "data_center_id": "US-MO-1",
   "volume_name": "runpod-video-models-us-mo-1",
   "volume_size_gb": 250,
