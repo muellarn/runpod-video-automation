@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from runpod_video_automation.runpod_client import RunPodClient
 
@@ -30,6 +31,27 @@ def test_find_or_create_volume_reuses_matching_volume() -> None:
     assert created is False
 
 
+def test_find_volume_rejects_undersized_existing_volume() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "volume-1",
+                    "name": "models",
+                    "size": 50,
+                    "dataCenterId": "EU-RO-1",
+                }
+            ],
+        )
+
+    with RunPodClient("test-key", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(Exception, match="below required"):
+            client.find_volume(
+                name="models", minimum_size=100, data_center_id="EU-RO-1"
+            )
+
+
 def test_create_pod_does_not_expose_comfyui_port() -> None:
     captured: dict[str, object] = {}
 
@@ -58,6 +80,8 @@ def test_create_pod_does_not_expose_comfyui_port() -> None:
     assert captured["volumeMountPath"] == "/runpod-volume"
     assert "dataCenterIds" not in captured
     assert captured["env"]["SERVE_API_LOCALLY"] == "true"
+    assert "RUNPOD_S3_ACCESS_KEY_ID" not in captured["env"]
+    assert "RUNPOD_S3_SECRET_ACCESS_KEY" not in captured["env"]
 
 
 def test_terminate_pod_retries_transient_server_error() -> None:

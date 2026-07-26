@@ -81,14 +81,13 @@ constraint.
 
 ## Selected Configuration
 
-The Wan profile enables ComfyUI's Triton backend and declares the compiler
-packages required by Triton's runtime:
+The Wan profile enables ComfyUI's Triton backend:
 
 ```json
-"system_packages": ["gcc", "python3-dev"],
 "comfy_args": ["--enable-triton-backend"]
 ```
 
-The orchestrator installs missing packages idempotently. It restarts only the
-ComfyUI process when the requested argument configuration is not active. It
-does not stop or terminate the RunPod Pod.
+The custom GHCR worker image already contains the compiler packages required by
+Triton's runtime. The orchestrator never invokes a package manager on the GPU
+worker. It restarts only the ComfyUI process when the requested argument
+configuration is not active.

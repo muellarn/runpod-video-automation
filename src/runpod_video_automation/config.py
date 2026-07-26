@@ -130,7 +130,6 @@ class Profile:
     setup_model_groups: tuple[str, ...] = ()
     model_path_aliases: tuple[ModelPathAlias, ...] = ()
     workflows: dict[str, WorkflowPreset] = field(default_factory=dict)
-    system_packages: tuple[str, ...] = ()
     comfy_args: tuple[str, ...] = ()
 
     @classmethod
@@ -196,12 +195,11 @@ class Profile:
                 "Profile setup_model_groups references unknown model groups: "
                 + ", ".join(unknown_setup_groups)
             )
-        system_packages = data.get("system_packages", [])
-        if not isinstance(system_packages, list) or not all(
-            isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9.+-]+", item)
-            for item in system_packages
-        ):
-            raise ValueError("Profile field 'system_packages' must be a package-name list")
+        if "system_packages" in data:
+            raise ValueError(
+                "Profile field 'system_packages' is no longer supported; "
+                "bake packages into the worker image"
+            )
         comfy_args = data.get("comfy_args", [])
         if not isinstance(comfy_args, list) or not all(
             isinstance(item, str) and item.startswith("--") for item in comfy_args
@@ -225,7 +223,6 @@ class Profile:
             setup_model_groups=tuple(raw_setup_groups),
             model_path_aliases=aliases,
             workflows=workflows,
-            system_packages=tuple(system_packages),
             comfy_args=tuple(comfy_args),
         )
         profile.models_for_groups(profile.model_groups)

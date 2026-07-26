@@ -26,7 +26,7 @@ def test_wait_for_ssh_reports_last_connection_error(
         worker.wait_for_ssh(timeout_seconds=1)
 
 
-def test_ensure_models_uses_parallel_segmented_resumable_downloads(
+def test_verify_models_only_checks_prewarmed_files(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -42,110 +42,25 @@ def test_ensure_models_uses_parallel_segmented_resumable_downloads(
         ModelFile("https://example.test/two", "models/vae/two.safetensors", 200),
     )
 
-    worker.ensure_models(models)
+    worker.verify_models(models)
 
-    assert len(calls) == 3
-    package_command, package_timeout = calls[1]
-    download_command, timeout = calls[2]
-    assert "apt-get install -y -qq -o=Dpkg::Use-Pty=0 aria2" in package_command
-    assert '>"$apt_log" 2>&1' in package_command
-    assert "tail -n 80" in package_command
-    assert package_timeout == 20 * 60
-    assert download_command.count(
-        "timeout --signal=INT --kill-after=30 600 aria2c"
-    ) == 2
-    assert download_command.count("--max-connection-per-server=4") == 2
-    assert download_command.count("--continue=true") == 2
-    assert download_command.count("--show-console-readout=false") == 2
-    assert download_command.count('>>"$log_file" 2>&1') == 2
-    assert "Models: $progress" in download_command
-    assert "Model download failed:" in download_command
-    assert "tail -n 20" in download_command
-    assert download_command.count("flock -w 1800 9") == 2
-    assert "Timed out waiting 30 minutes" in download_command
-    assert download_command.count("mv -T") == 2
-    assert "test -f /runpod-volume/models/unet/one.safetensors" in download_command
-    assert "kill -0" in download_command
-    assert "trap - EXIT" in download_command
-    assert "pids=\"\"" in download_command
-    assert "for pid in $pids" in download_command
-    assert timeout == 3 * 60 * 60
+    assert len(calls) == 1
+    command, timeout = calls[0]
+    assert "test -f /runpod-volume/models/unet/one.safetensors" in command
+    assert "test -f /runpod-volume/models/vae/two.safetensors" in command
+    assert "stat -c%s" in command
+    assert "https://" not in command
+    assert "aria2" not in command
+    assert "apt-get" not in command
+    assert ".part" not in command
+    assert timeout == 5 * 60
     assert capsys.readouterr().out.splitlines() == [
-        "Models: checking 2 required file(s)",
-        "Models: downloader ready",
-        "Models: 2/2 ready",
+        "Models: 2/2 prewarmed files ready"
     ]
-    subprocess.run(["bash", "-n", "-c", package_command], check=True)
-    subprocess.run(["bash", "-n", "-c", download_command], check=True)
+    subprocess.run(["bash", "-n", "-c", command], check=True)
 
 
-def test_ensure_models_verifies_sha256(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, int | None]] = []
-    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
-    monkeypatch.setattr(
-        worker,
-        "run",
-        lambda command, timeout=None: calls.append((command, timeout)),
-    )
-    checksum = "a" * 64
-
-    worker.ensure_models(
-        (
-            ModelFile(
-                "https://example.test/model",
-                "models/unet/model.safetensors",
-                100,
-                checksum,
-            ),
-        )
-    )
-
-    download_command, _ = calls[-1]
-    assert download_command.count("sha256sum") == 4
-    assert checksum in download_command
-
-
-def test_ensure_models_hides_generated_command_on_final_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
-
-    def run(command: str, *, timeout: int | None = None) -> None:
-        if timeout == 3 * 60 * 60:
-            raise subprocess.CalledProcessError(1, "secret-model-url")
-
-    monkeypatch.setattr(worker, "run", run)
-
-    with pytest.raises(RuntimeError, match="concise diagnostics") as error:
-        worker.ensure_models(
-            (ModelFile("https://secret.test/model", "models/model.bin", 100),)
-        )
-
-    assert "secret-model-url" not in str(error.value)
-    assert "https://secret.test/model" not in str(error.value)
-
-
-def test_ensure_models_reports_timeout_and_preserves_partial_files(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
-
-    def run(command: str, *, timeout: int | None = None) -> None:
-        if timeout == 3 * 60 * 60:
-            raise subprocess.TimeoutExpired(command, timeout)
-
-    monkeypatch.setattr(worker, "run", run)
-
-    with pytest.raises(TimeoutError, match="partial files were preserved") as error:
-        worker.ensure_models(
-            (ModelFile("https://example.test/model", "models/model.bin", 100),)
-        )
-
-    assert error.value.__cause__ is None
-    assert error.value.__suppress_context__ is True
-
-
-def test_ensure_models_exposes_modern_model_directories_to_worker(
+def test_verify_models_exposes_modern_model_directories_to_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, int | None]] = []
@@ -156,7 +71,7 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
         lambda command, timeout=None: calls.append((command, timeout)),
     )
 
-    worker.ensure_models(
+    worker.verify_models(
         (
             ModelFile(
                 "https://example.test/unet",
@@ -175,43 +90,18 @@ def test_ensure_models_exposes_modern_model_directories_to_worker(
         ),
     )
 
-    download_command, _ = calls[-1]
-    assert "mkdir -p /runpod-volume/models/unet /runpod-volume/models/clip" in download_command
+    verify_command, _ = calls[-1]
+    assert "mkdir -p /runpod-volume/models/unet /runpod-volume/models/clip" in verify_command
     assert (
         "ln -sfn /runpod-volume/models/diffusion_models/model.safetensors "
         "/runpod-volume/models/unet/model.safetensors"
-    ) in download_command
+    ) in verify_command
     assert (
         "ln -sfn /runpod-volume/models/text_encoders/encoder.safetensors "
         "/runpod-volume/models/clip/encoder.safetensors"
-    ) in download_command
-    assert "|| status=1; fi" in download_command
-
-
-def test_ensure_system_packages_installs_only_when_missing(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    calls: list[tuple[str, int | None]] = []
-    worker = RemoteWorker(host="example.test", port=22, ssh_key=Path(__file__))
-    monkeypatch.setattr(
-        worker,
-        "run",
-        lambda command, timeout=None: calls.append((command, timeout)),
-    )
-
-    worker.ensure_system_packages(("gcc", "python3-dev"))
-
-    command, timeout = calls[0]
-    assert "dpkg-query -W gcc python3-dev" in command
-    assert "apt-get install -y -qq -o=Dpkg::Use-Pty=0 gcc python3-dev" in command
-    assert '>"$apt_log" 2>&1' in command
-    assert timeout == 20 * 60
-    assert capsys.readouterr().out.splitlines() == [
-        "System packages: gcc, python3-dev (checking)",
-        "System packages: gcc, python3-dev (ready)",
-    ]
-    subprocess.run(["bash", "-n", "-c", command], check=True)
+    ) in verify_command
+    assert "|| status=1; fi" in verify_command
+    assert "aria2" not in verify_command
 
 
 def test_ensure_comfy_args_restarts_only_for_a_new_configuration(
@@ -226,23 +116,16 @@ def test_ensure_comfy_args_restarts_only_for_a_new_configuration(
         lambda command, timeout=None: calls.append((command, timeout)),
     )
 
-    worker.ensure_comfy_args(
-        ("--enable-triton-backend",),
-        system_packages=("gcc", "python3-dev"),
-    )
+    worker.ensure_comfy_args(("--enable-triton-backend",))
 
     command, timeout = calls[0]
     assert "runpod-video-comfy-args" in command
-    assert "dpkg-query -W gcc python3-dev" in command
     assert "--enable-triton-backend" in command
     assert "kill -0" in command
     assert "nohup /opt/venv/bin/python" in command
-    assert '>"$apt_log" 2>&1' in command
-    assert timeout == 20 * 60
-    assert capsys.readouterr().out.splitlines() == [
-        "System packages: gcc, python3-dev (checking)",
-        "System packages: gcc, python3-dev (ready)",
-    ]
+    assert "apt-get" not in command
+    assert timeout == 5 * 60
+    assert capsys.readouterr().out == ""
     subprocess.run(["bash", "-n", "-c", command], check=True)
 
 

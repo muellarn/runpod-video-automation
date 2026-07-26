@@ -7,17 +7,19 @@ install these files.
 
 ## Install
 
-Install only the image editor on the persistent Network Volume:
+Prewarm only the image editor on the persistent Network Volume without creating
+a GPU Pod:
 
 ```bash
 uv run runpod-video setup \
   --apply \
-  --model-group qwen-image-edit-2511 \
-  --stop-pod
+  --model-group qwen-image-edit-2511
 ```
 
-A scene that requests the `image_edit` workflow selects the group
-automatically, so a separate setup command is optional.
+A scene that requests the `image_edit` workflow selects the group automatically
+for cache preflight, but it never downloads a missing model on the GPU worker.
+Run the setup command once before rendering; a missing cache aborts before Pod
+allocation.
 
 ## Manifest
 
@@ -162,4 +164,5 @@ SHA-256 hashes:
 | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | 9,384,670,680 | `cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4` |
 | `qwen_image_vae.safetensors` | 253,806,246 | `a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f` |
 
-The download verifier rejects files whose size or configured hash differs.
+The podless prewarm rejects source data whose size or configured hash differs,
+and GPU allocation requires the resulting content-addressed cache marker.

@@ -24,8 +24,7 @@ inference:
 ```bash
 uv run runpod-video setup \
   --apply \
-  --include-refiner \
-  --stop-pod
+  --include-refiner
 ```
 
 Use `--refiner-profile PATH` to select a different pinned profile.
@@ -60,12 +59,16 @@ uv run runpod-video scene projects/cozy-bedroom \
 
 On a cache miss, the command performs these phases in order:
 
-1. Download or verify the pinned KoboldCpp and GGUF artifacts.
+1. Verify the prewarmed KoboldCpp and GGUF artifacts.
 2. Stop ComfyUI and run KoboldCpp on the worker loopback interface.
 3. Validate and persist the strict prompt overlay.
 4. Stop KoboldCpp completely.
 5. Start ComfyUI, verify the required generation models, and render on the same
    Pod.
+
+The command never downloads a missing artifact on the GPU worker. Run the
+podless `setup --apply --include-refiner` prewarm first; otherwise the cache
+preflight fails before a stopped Pod is started or a new Pod is created.
 
 A cache hit skips the refiner process and does not create a Pod during
 `--plan`. A cache miss under `--plan` reports that refinement must first be

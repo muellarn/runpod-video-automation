@@ -19,8 +19,14 @@ better fit for Wan 5B or sustained parallel queues.
 
 ```bash
 uv sync --extra dev
-export RUNPOD_API_KEY="..."
+cp .env.example .env
 ```
+
+The CLI loads `.env` from the repository root without overriding exported
+variables. Set `RUNPOD_VIDEO_ENV_FILE` to share one secret file between Git
+worktrees. `RUNPOD_API_KEY` controls RunPod resources; the separate
+`RUNPOD_S3_ACCESS_KEY_ID` and `RUNPOD_S3_SECRET_ACCESS_KEY` credentials access
+the profile's Network Volume without starting a Pod.
 
 The default profile reads `~/.ssh/id_ed25519` and its public key. Override it
 with `RUNPOD_VIDEO_SSH_KEY` or `--ssh-key`.
@@ -36,22 +42,27 @@ uv run runpod-video plan
 
 ## Render
 
-Install model groups without queueing a generation:
+Prewarm model groups through RunPod's S3-compatible API without creating a GPU
+Pod:
 
 ```bash
 uv run runpod-video setup \
   --apply \
   --model-group wan22-i2v \
-  --model-group z-image-turbo \
-  --stop-pod
+  --model-group z-image-turbo
 ```
 
-`setup` creates a new Pod unless `--pod-id` is explicitly supplied, mounts the
-profile's Network Volume, verifies or downloads the selected files, creates the
-configured model-path aliases, and exits without opening ComfyUI or queueing a
-workflow. It is still billable while the setup Pod runs. Existing complete
-files are skipped; `.part` downloads resume after interruptions. Without
-`--model-group`, setup installs the profile's `setup_model_groups` selection.
+`setup` streams fixed HTTP ranges directly from the pinned source URLs into
+multipart S3 uploads. No complete model is stored on the orchestrator and no
+GPU Pod is created. Every source is checked against its pinned size and
+SHA-256. A content-addressed `COMPLETE.json` marker is written only after every
+required object is valid. Without `--apply`, the command only reports cache
+status. Without `--model-group`, it uses the profile's `setup_model_groups`.
+
+The same operation can run entirely on a GitHub-hosted CPU runner through the
+manual `Prewarm model cache` workflow. Store the three RunPod credentials as
+GitHub Actions secrets. The Network Volume still incurs its normal storage
+charge, but no GPU compute is allocated.
 
 The included `workflows/wan22-i2v-14b-api.json` is an API-format conversion of
 ComfyUI's official Wan 2.2 14B I2V example. It produces a WebM output. Upload an
@@ -74,6 +85,15 @@ seed, and node 50 controls width, height, frame count, and batch size.
 Custom workflows can be exported with `Workflow -> Export (API)`. Select their
 dependencies with one or more `--model-group` options.
 
+Each low-level `run` uses an isolated
+`.runpod-video/runs/RUN_ID/` prefix on the Network Volume. Input files are
+streamed there through S3 before Pod allocation. ComfyUI reads those files and
+writes outputs through the mounted volume; the orchestrator then downloads and
+hashes each output through S3. The final `_SUCCESS` JSON object is published
+only after all expected outputs pass validation. S3 credentials are never sent
+to the worker. Reusing a Pod for `run` requires `--restart` because ComfyUI must
+switch to the new run's input and output directories.
+
 The default Wan profile enables the ComfyUI Triton backend on H100 workers. In
 the measured 576x800, 81-frame, 20-step workload this reduced warm wall time
 from about 175 seconds to 161 seconds without an observed quality loss. The
@@ -88,11 +108,11 @@ is line-buffered, so status updates also appear immediately in redirected or
 `nohup` logs. Download, start-image, node, sampler, output, and completion
 progress is therefore shown directly by the main command.
 
-Remote package setup is summarized instead of streaming `apt` or `dpkg` output.
-Active model downloads produce one compact progress line about every ten
-seconds. Recoverable aria2/Hugging Face range warnings stay in temporary remote
-logs; the CLI prints their recent lines only if a model ultimately fails size or
-SHA-256 verification. Resumable partial files remain on the Network Volume.
+Before creating or starting a Pod, every render command requires the exact
+content-addressed S3 cache marker and verifies all remote object sizes. A cache
+miss aborts without GPU cost. On the worker, model files are checked again by
+path and size and model-directory aliases are created. The worker never
+downloads models, installs packages, or receives S3 credentials.
 
 Uploads, ComfyUI execution, and output downloads are retried twice by default.
 Set a different number of retries with `--retries N`. Before retrying a failed
@@ -104,7 +124,7 @@ queue entries.
 For timelines longer or more controlled than one prompt, use a scene manifest.
 It combines a global character/style description with separate action and
 camera direction for every shot. All shots render on the same Pod, so models
-are downloaded and initialized once.
+are initialized once.
 
 See [`docs/scene-manifest-reference.md`](docs/scene-manifest-reference.md) for
 the complete field-by-field manifest, prompting, continuity, sampling, image,
@@ -169,7 +189,7 @@ cannot be inferred reliably from an action prompt.
 The first shot requires either `start_image` or `generate_start_image`. Generated
 keyframes are created with the included Z-Image workflow on the same Pod, downloaded
 to `000-generated-start-image`, and uploaded back into ComfyUI for Wan I2V. The
-optional Z-Image model, text encoder, and VAE are only downloaded when a scene
+optional Z-Image model, text encoder, and VAE must be prewarmed before a scene
 requests generation. The profile selects the default start-image adapter; an
 individual request may set `adapter` only when it matches the selected workflow.
 Distilled Z-Image uses zeroed negative conditioning and therefore does not
@@ -178,7 +198,7 @@ A generated end image can use the opt-in Qwen-Image-Edit-2511 workflow. It
 accepts one to three ordered reference images and derives its output size from
 the first reference. The resulting image is passed to Wan as first/last-frame
 conditioning. Qwen's model files are not part of the default `setup` selection
-and are downloaded only when the workflow is requested. See
+and must be prewarmed before the workflow is requested. See
 [`docs/qwen-image-edit-2511.md`](docs/qwen-image-edit-2511.md) for the manifest
 schema, reference sources, review flow, and model provenance.
 A later shot may omit both fields; the orchestrator then uses the previous
@@ -417,9 +437,10 @@ an interrupted run can safely continue with `--resume`.
 profile also rejects a provisioned Pod whose reported hourly price exceeds its
 `max_hourly_cost` value and immediately terminates it.
 
-The first run creates a 250 GB Network Volume and downloads the model files.
-That volume continues to incur storage cost after the GPU Pod terminates. Later
-runs reuse the model files and only pay for the active Pod plus storage.
+`setup --apply` creates the 250 GB Network Volume if necessary and prewarms it
+without a GPU. The volume continues to incur storage cost independently of Pods.
+Render commands require the volume and cache to exist and never create an empty
+volume or download a missing model after GPU allocation.
 
 By default, the Pod is terminated after success, failure, timeout, or Ctrl-C.
 Use `--keep-pod` only for debugging. Use `--stop-pod` to release the GPU but
@@ -505,7 +526,7 @@ Profiles separate infrastructure from model and workflow selection. The
 included profile defines independent `wan22-i2v`, `z-image-turbo`, and
 `qwen-image-edit-2511` groups, plus `video`, `start_image`, and `image_edit`
 workflow presets. Qwen image editing is opt-in; parameterless `setup` uses the
-profile's `setup_model_groups` and installs only Wan and Z-Image. A preset binds
+profile's `setup_model_groups` and prewarms only Wan and Z-Image. A preset binds
 an API workflow to an adapter, any number of model groups, and optional adapter
 defaults such as the checkpoint or sampler. Scene CLI overrides retain the
 preset's other values: `--workflow`, `--video-adapter`, `--video-model-group`,
@@ -519,10 +540,10 @@ command remains adapter-independent.
 
 A profile controls:
 
-- Docker image and GPU fallback order
+- GHCR worker image and GPU fallback order
 - data center and persistent volume size
 - minimum system RAM and vCPU
-- arbitrary named groups of exact HTTPS model downloads and destination paths
+- arbitrary named groups of exact HTTPS sources, destination paths, sizes, and SHA-256 hashes
 - model-directory aliases exposed to the worker image
 - default workflow paths, adapters, model groups, and adapter settings
 
@@ -532,7 +553,12 @@ Minimal structure:
 {
   "model_groups": {
     "my-video-model": [
-      {"url": "https://example/model.safetensors", "path": "models/unet/model.safetensors"}
+      {
+        "url": "https://example/model.safetensors",
+        "path": "models/unet/model.safetensors",
+        "size": 123456,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
     ]
   },
   "model_path_aliases": [
@@ -547,6 +573,16 @@ Minimal structure:
   }
 }
 ```
+
+## Worker Image
+
+`Dockerfile` extends the pinned RunPod ComfyUI base image and bakes compiler
+packages required by the Triton backend into the image. It contains no model
+weights or project data. `.github/workflows/build-worker.yml` publishes
+`linux/amd64` images to GHCR with an immutable commit tag and reports the image
+digest. The default branch also receives `main`; replace that tag in the profile
+with the reported digest for a frozen production run. The GHCR package must be
+public unless RunPod is configured with private registry credentials.
 
 Model aliases preserve paths below their source directory. For example,
 `models/diffusion_models` to `models/unet` exposes every selected diffusion

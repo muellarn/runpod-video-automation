@@ -130,6 +130,20 @@ class RunPodClient:
     def find_or_create_volume(
         self, *, name: str, size: int, data_center_id: str
     ) -> tuple[dict[str, Any], bool]:
+        try:
+            return self.find_volume(
+                name=name, minimum_size=size, data_center_id=data_center_id
+            ), False
+        except RunPodError as error:
+            if "was not found" not in str(error):
+                raise
+        return self.create_network_volume(
+            name=name, size=size, data_center_id=data_center_id
+        ), True
+
+    def find_volume(
+        self, *, name: str, minimum_size: int, data_center_id: str
+    ) -> dict[str, Any]:
         matches = [
             volume
             for volume in self.list_network_volumes()
@@ -143,10 +157,16 @@ class RunPodClient:
                 raise RunPodError(
                     f"Volume {name!r} is in {volume.get('dataCenterId')}, not {data_center_id}"
                 )
-            return volume, False
-        return self.create_network_volume(
-            name=name, size=size, data_center_id=data_center_id
-        ), True
+            if int(volume.get("size") or 0) < minimum_size:
+                raise RunPodError(
+                    f"Volume {name!r} has {volume.get('size')} GB, below required "
+                    f"{minimum_size} GB"
+                )
+            return volume
+        raise RunPodError(
+            f"Network volume {name!r} was not found in {data_center_id}; "
+            "run setup --apply first"
+        )
 
     def wait_until_running(
         self, pod_id: str, *, timeout_seconds: int = 900

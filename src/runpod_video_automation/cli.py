@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 import webbrowser
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -24,6 +25,8 @@ from runpod_video_automation.adapters import (
 )
 from runpod_video_automation.comfy_client import ComfyClient
 from runpod_video_automation.config import ModelFile, Profile, WorkflowSelection
+from runpod_video_automation.environment import load_environment
+from runpod_video_automation.model_cache import ModelCache
 from runpod_video_automation.prompt_refiner import (
     PromptRefinerProfile,
     RefinementResult,
@@ -36,6 +39,7 @@ from runpod_video_automation.prompt_refiner.chat_ui import (
 )
 from runpod_video_automation.prompt_refiner.client import KoboldClient
 from runpod_video_automation.remote import RemoteWorker
+from runpod_video_automation.run_artifacts import RunArtifacts
 from runpod_video_automation.render_metadata import (
     build_generated_image_inputs,
     build_shot_inputs,
@@ -52,6 +56,10 @@ from runpod_video_automation.render_metadata import (
     write_start_image_metadata,
 )
 from runpod_video_automation.runpod_client import RunPodClient
+from runpod_video_automation.s3_storage import (
+    NetworkVolumeStorage,
+    S3Credentials,
+)
 from runpod_video_automation.scene import (
     ImageGeneration,
     Scene,
@@ -147,6 +155,18 @@ def _api_key() -> str:
     return value
 
 
+def _model_cache(volume: dict[str, Any], profile: Profile) -> ModelCache:
+    volume_id = volume.get("id")
+    if not isinstance(volume_id, str) or not volume_id:
+        raise RuntimeError("RunPod returned a Network Volume without an ID")
+    storage = NetworkVolumeStorage(
+        volume_id=volume_id,
+        data_center_id=profile.data_center_id,
+        credentials=S3Credentials.from_environment(),
+    )
+    return ModelCache(storage)
+
+
 def _ssh_key(value: str | None) -> Path:
     path = Path(value or os.environ.get("RUNPOD_VIDEO_SSH_KEY", "~/.ssh/id_ed25519"))
     path = path.expanduser()
@@ -195,7 +215,10 @@ def plan(args: argparse.Namespace) -> None:
             f"Workflow {name}: {workflow.path} via {workflow.adapter} "
             f"[{', '.join(workflow.model_groups)}]"
         )
-    print("Lifecycle: create/reuse volume -> create pod -> SSH -> models -> workflow -> download -> terminate")
+    print(
+        "Lifecycle: require prewarmed volume -> stage inputs -> create pod -> "
+        "SSH -> verify models -> workflow -> validate outputs -> terminate"
+    )
 
 
 def _parse_image(value: str) -> tuple[Path, str | None]:
@@ -331,32 +354,53 @@ def _remote_session(
     *,
     models: tuple[ModelFile, ...],
     prepare_comfy: bool = True,
+    prepare_volume: Callable[[NetworkVolumeStorage], None] | None = None,
+    comfy_args: tuple[str, ...] | None = None,
 ) -> Iterator[tuple[RemoteWorker, str, float | None, dict[str, Any]]]:
     ssh_key = _ssh_key(args.ssh_key)
     requested_pod_id: str | None = args.pod_id
-    pod_id: str | None = requested_pod_id
+    pod_id: str | None = None
     with RunPodClient(_api_key()) as runpod:
+        volume = runpod.find_volume(
+            name=profile.volume_name,
+            minimum_size=profile.volume_size_gb,
+            data_center_id=profile.data_center_id,
+        )
+        with _model_cache(volume, profile) as cache:
+            plan = cache.require_complete(models)
+        print(f"Model cache: {plan.fingerprint[:12]} (complete)")
+        if prepare_volume is not None:
+            prepare_volume(
+                NetworkVolumeStorage(
+                    volume_id=volume["id"],
+                    data_center_id=profile.data_center_id,
+                    credentials=S3Credentials.from_environment(),
+                )
+            )
+        selected_comfy_args = profile.comfy_args if comfy_args is None else comfy_args
         try:
             if requested_pod_id:
                 print(f"Reusing pod {requested_pod_id}")
                 existing_pod = runpod.get_pod(requested_pod_id)
+                existing_volume_id = existing_pod.get("networkVolumeId")
+                if (
+                    isinstance(existing_volume_id, str)
+                    and existing_volume_id != volume["id"]
+                ):
+                    raise RuntimeError(
+                        f"Pod {requested_pod_id} uses Network Volume "
+                        f"{existing_volume_id}, expected {volume['id']}"
+                    )
                 existing_status = existing_pod.get("desiredStatus") or existing_pod.get(
                     "status"
                 )
                 if existing_status in {"EXITED", "STOPPED"}:
                     print(f"Starting stopped pod {requested_pod_id}")
                     runpod.start_pod(requested_pod_id)
+                pod_id = requested_pod_id
             else:
                 public_key = ssh_key.with_suffix(ssh_key.suffix + ".pub").read_text().strip()
-                volume, created = runpod.find_or_create_volume(
-                    name=profile.volume_name,
-                    size=profile.volume_size_gb,
-                    data_center_id=profile.data_center_id,
-                )
-                print(
-                    f"Network volume: {volume['id']} "
-                    f"({'created' if created else 'reused'})"
-                )
+                print(f"Network volume: {volume['id']} (prewarmed)")
                 pod = runpod.create_pod(
                     name=f"runpod-video-{profile.name}",
                     image=profile.image,
@@ -385,14 +429,9 @@ def _remote_session(
                 host=str(pod["publicIp"]), port=ssh_port, ssh_key=ssh_key
             )
             remote.wait_for_ssh()
-            remote.ensure_models(models, profile.model_path_aliases)
-            if prepare_comfy and profile.comfy_args:
-                remote.ensure_comfy_args(
-                    profile.comfy_args,
-                    system_packages=profile.system_packages,
-                )
-            elif prepare_comfy and profile.system_packages:
-                remote.ensure_system_packages(profile.system_packages)
+            remote.verify_models(models, profile.model_path_aliases)
+            if prepare_comfy and selected_comfy_args:
+                remote.ensure_comfy_args(selected_comfy_args)
             yield remote, pod_id, hourly_cost, pod
         finally:
             if pod_id and args.stop_pod:
@@ -416,11 +455,8 @@ def _comfy_session(
 ) -> Iterator[ComfyClient]:
     remote, pod_id, hourly_cost, pod = remote_details
     if models is not None:
-        remote.ensure_models(models, profile.model_path_aliases)
-        remote.ensure_comfy_args(
-            profile.comfy_args,
-            system_packages=profile.system_packages,
-        )
+        remote.verify_models(models, profile.model_path_aliases)
+        remote.ensure_comfy_args(profile.comfy_args)
     with remote.comfy_tunnel() as base_url:
         comfy = ComfyClient(base_url)
         try:
@@ -451,13 +487,21 @@ def _worker_session(
     profile: Profile,
     *,
     models: tuple[ModelFile, ...] | None = None,
+    prepare_volume: Callable[[NetworkVolumeStorage], None] | None = None,
+    comfy_args: tuple[str, ...] | None = None,
 ) -> Iterator[ComfyClient]:
     selected_models = (
         models
         if models is not None
         else profile.models_for_groups(profile.default_model_groups)
     )
-    with _remote_session(args, profile, models=selected_models) as remote_details:
+    with _remote_session(
+        args,
+        profile,
+        models=selected_models,
+        prepare_volume=prepare_volume,
+        comfy_args=comfy_args,
+    ) as remote_details:
         with _comfy_session(
             args,
             profile,
@@ -616,9 +660,6 @@ def _chat_max_output_tokens(
 
 
 def setup(args: argparse.Namespace) -> None:
-    if not args.apply:
-        raise RuntimeError("Refusing to create billable resources without --apply")
-    _validate_execution_args(args)
     profile = Profile.load(_profile_path(args.profile))
     groups = tuple(args.model_group or profile.default_model_groups)
     models = profile.models_for_groups(groups)
@@ -629,14 +670,42 @@ def setup(args: argparse.Namespace) -> None:
         models = tuple(dict.fromkeys((*models, *refiner_profile.artifacts)))
     print(f"Model groups: {', '.join(groups) if groups else '(none)'}")
     print(f"Model files: {len(models)}")
-    with _remote_session(args, profile, models=models):
-        print("Model setup complete")
+    with RunPodClient(_api_key()) as runpod:
+        if args.apply:
+            volume, created = runpod.find_or_create_volume(
+                name=profile.volume_name,
+                size=profile.volume_size_gb,
+                data_center_id=profile.data_center_id,
+            )
+        else:
+            volume = runpod.find_volume(
+                name=profile.volume_name,
+                minimum_size=profile.volume_size_gb,
+                data_center_id=profile.data_center_id,
+            )
+            created = False
+    print(
+        f"Network volume: {volume['id']} "
+        f"({'created' if created else 'reused'})"
+    )
+    with _model_cache(volume, profile) as cache:
+        if args.apply:
+            plan = cache.prewarm(models)
+            print(f"Model cache ready: {plan.fingerprint}")
+        else:
+            plan, complete = cache.status(models)
+            print(
+                f"Model cache {plan.fingerprint}: "
+                f"{'complete' if complete else 'missing'}"
+            )
 
 
 def run(args: argparse.Namespace) -> None:
     if not args.apply:
         raise RuntimeError("Refusing to create billable resources without --apply")
     _validate_execution_args(args)
+    if args.pod_id and not args.restart:
+        raise ValueError("S3-staged run with --pod-id requires --restart")
     profile = Profile.load(_profile_path(args.profile))
     default_groups = (
         profile.workflows["video"].model_groups
@@ -648,30 +717,43 @@ def run(args: argparse.Namespace) -> None:
     workflow_path = Path(args.workflow).expanduser().resolve()
     workflow = load_workflow(workflow_path)
     apply_overrides(workflow, args.set or [])
-    with _worker_session(args, profile, models=models) as comfy:
-        for image_arg in args.image or []:
-            local_path, remote_name = _parse_image(image_arg)
-            uploaded_name = _retry_operation(
-                f"Upload {local_path}",
-                getattr(args, "retries", 2),
-                lambda: comfy.upload_image(local_path, remote_name),
-            )
-            print(f"Uploaded input image: {uploaded_name}")
-        _, history = _queue_with_retries(
+    images = tuple(_parse_image(value) for value in args.image or [])
+    run_id = uuid.uuid4().hex
+    artifact_store: RunArtifacts | None = None
+
+    def stage(storage: NetworkVolumeStorage) -> None:
+        nonlocal artifact_store
+        artifact_store = RunArtifacts(storage, run_id)
+        staged = artifact_store.stage_inputs(images, workflow)
+        print(f"Staged run inputs: {len(staged)} ({run_id})")
+
+    comfy_args = (
+        *profile.comfy_args,
+        *RunArtifacts.comfy_args_for(run_id),
+    )
+    with _worker_session(
+        args,
+        profile,
+        models=models,
+        prepare_volume=stage,
+        comfy_args=comfy_args,
+    ) as comfy:
+        prompt_id, history = _queue_with_retries(
             comfy,
             workflow,
             args,
             lambda message: print(message, flush=True),
         )
-        outputs = _retry_operation(
-            "Output download",
-            getattr(args, "retries", 2),
-            lambda: comfy.download_outputs(history, Path(args.output)),
+        if artifact_store is None:
+            raise RuntimeError("Run inputs were not staged")
+        outputs = artifact_store.publish_outputs(
+            history,
+            Path(args.output),
+            prompt_id=prompt_id,
         )
-        if not outputs:
-            raise RuntimeError("The workflow completed without downloadable outputs")
         for output in outputs:
             print(f"Downloaded: {output}")
+        print(f"Run artifacts committed: {artifact_store.success_key}")
 
 
 def _scene_plan(
@@ -2547,37 +2629,24 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.set_defaults(func=plan)
 
     setup_parser = subparsers.add_parser(
-        "setup", help="Provision a worker and install selected model groups only"
+        "setup", help="Prewarm selected model groups without creating a GPU Pod"
     )
     setup_parser.add_argument("--profile")
     setup_parser.add_argument(
         "--model-group",
         action="append",
-        help="Model group to install; repeat as needed (defaults to profile presets)",
+        help="Model group to prewarm; repeat as needed (defaults to profile presets)",
     )
     setup_parser.add_argument(
         "--include-refiner",
         action="store_true",
-        help="Also install the pinned prompt-refiner runtime and model",
+        help="Also prewarm the pinned prompt-refiner runtime and model",
     )
     setup_parser.add_argument("--refiner-profile")
-    setup_parser.add_argument("--ssh-key")
-    setup_parser.add_argument("--pod-id", help="Reuse an existing Pod")
-    setup_parser.add_argument("--start-timeout", type=int, default=900)
     setup_parser.add_argument(
-        "--apply", action="store_true", help="Allow creation of billable resources"
-    )
-    setup_lifecycle = setup_parser.add_mutually_exclusive_group()
-    setup_lifecycle.add_argument("--keep-pod", action="store_true")
-    setup_lifecycle.add_argument(
-        "--stop-pod",
+        "--apply",
         action="store_true",
-        help="Stop instead of terminating the Pod after setup",
-    )
-    setup_parser.add_argument(
-        "--idle-stop-minutes",
-        type=float,
-        help="With --keep-pod, stop the Pod after this many idle minutes",
+        help="Allow Network Volume writes; never creates a GPU Pod",
     )
     setup_parser.set_defaults(func=setup)
 
@@ -2821,6 +2890,7 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
     try:
+        load_environment(PROJECT_ROOT)
         args = build_parser().parse_args()
         args.func(args)
     except KeyboardInterrupt:

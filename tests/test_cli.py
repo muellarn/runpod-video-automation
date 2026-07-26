@@ -423,54 +423,93 @@ def test_scene_rejects_refiner_options_without_opt_in(tmp_path: Path) -> None:
         cli.render_scene(args)
 
 
-def test_setup_installs_selected_models_without_comfyui(
+def test_setup_prewarms_selected_models_without_gpu_pod(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     video_model = ModelFile("https://example.test/video", "models/video", 1)
     image_model = ModelFile("https://example.test/image", "models/image", 1)
     profile = _profile((video_model,), (image_model,))
-    installed: list[tuple[ModelFile, ...]] = []
+    prewarmed: list[tuple[ModelFile, ...]] = []
 
-    @contextmanager
-    def fake_remote_session(args, loaded_profile, *, models):
-        assert loaded_profile is profile
-        installed.append(models)
-        yield object(), "pod-new", 1.0, {}
+    class FakeRunPodClient:
+        def __init__(self, api_key):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def find_or_create_volume(self, **kwargs):
+            return {"id": "volume-1"}, False
+
+    class FakeCache:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def prewarm(self, models):
+            prewarmed.append(models)
+            return Namespace(fingerprint="cache")
 
     monkeypatch.setattr(cli.Profile, "load", lambda path: profile)
-    monkeypatch.setattr(cli, "_remote_session", fake_remote_session)
-    args = build_parser().parse_args(
-        ["setup", "--apply", "--model-group", "start-image", "--stop-pod"]
-    )
+    monkeypatch.setenv("RUNPOD_API_KEY", "key")
+    monkeypatch.setattr(cli, "RunPodClient", FakeRunPodClient)
+    monkeypatch.setattr(cli, "_model_cache", lambda volume, profile: FakeCache())
+    args = build_parser().parse_args(["setup", "--apply", "--model-group", "start-image"])
 
     args.func(args)
 
-    assert installed == [(image_model,)]
+    assert prewarmed == [(image_model,)]
 
 
-def test_setup_can_install_prompt_refiner_artifacts(
+def test_setup_can_prewarm_prompt_refiner_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = ModelFile("https://example.test/runtime", "tools/runtime", 1)
     model = ModelFile("https://example.test/model", "models/model.gguf", 2)
-    installed: list[tuple[ModelFile, ...]] = []
+    prewarmed: list[tuple[ModelFile, ...]] = []
 
     class RefinerProfile:
         artifacts = (runtime, model)
 
-    @contextmanager
-    def fake_remote_session(args, profile, *, models):
-        installed.append(models)
-        yield object(), "pod-new", 1.0, {}
+    class FakeRunPodClient:
+        def __init__(self, api_key):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def find_or_create_volume(self, **kwargs):
+            return {"id": "volume-1"}, False
+
+    class FakeCache:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def prewarm(self, models):
+            prewarmed.append(models)
+            return Namespace(fingerprint="cache")
 
     monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
     monkeypatch.setattr(cli.PromptRefinerProfile, "load", lambda path: RefinerProfile())
-    monkeypatch.setattr(cli, "_remote_session", fake_remote_session)
+    monkeypatch.setenv("RUNPOD_API_KEY", "key")
+    monkeypatch.setattr(cli, "RunPodClient", FakeRunPodClient)
+    monkeypatch.setattr(cli, "_model_cache", lambda volume, profile: FakeCache())
     args = build_parser().parse_args(["setup", "--apply", "--include-refiner"])
 
     args.func(args)
 
-    assert installed == [(runtime, model)]
+    assert prewarmed == [(runtime, model)]
 
 
 def test_scene_project_directory_uses_local_output(tmp_path: Path) -> None:
@@ -868,6 +907,86 @@ def test_run_resolves_workflow_from_current_directory(
         cli.run(args)
 
     assert loaded == [workflow.resolve()]
+
+
+def test_run_requires_restart_when_reusing_pod(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workflow = tmp_path / "custom.json"
+    workflow.write_text("{}")
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    args = build_parser().parse_args(
+        ["run", str(workflow), "--apply", "--pod-id", "pod-1"]
+    )
+
+    with pytest.raises(ValueError, match="requires --restart"):
+        cli.run(args)
+
+
+def test_run_stages_before_worker_and_publishes_volume_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workflow = tmp_path / "custom.json"
+    workflow.write_text(json.dumps({"1": {"class_type": "SaveImage", "inputs": {}}}))
+    image = tmp_path / "start.png"
+    image.write_bytes(b"input")
+    events: list[str] = []
+
+    class FakeArtifacts:
+        success_key = ".runpod-video/runs/test/_SUCCESS"
+
+        def __init__(self, storage, run_id: str) -> None:
+            events.append("artifacts")
+
+        @staticmethod
+        def comfy_args_for(run_id: str) -> tuple[str, ...]:
+            return ("--output-directory", f"/runpod-volume/runs/{run_id}")
+
+        def stage_inputs(self, inputs, effective_workflow):
+            assert tuple(inputs) == ((image, "input.png"),)
+            assert effective_workflow["1"]["class_type"] == "SaveImage"
+            events.append("stage")
+            return [{"name": "input.png"}]
+
+        def publish_outputs(self, history, output_dir: Path, *, prompt_id: str):
+            assert prompt_id == "prompt-1"
+            assert history["outputs"] == {}
+            events.append("publish")
+            return [output_dir / "result.webm"]
+
+    class FakeComfy:
+        def queue_and_wait(self, workflow, *, timeout_seconds, status_callback):
+            events.append("queue")
+            return "prompt-1", {"outputs": {}}
+
+        def interrupt_and_clear(self) -> None:
+            raise AssertionError("A successful workflow must not be interrupted")
+
+    @contextmanager
+    def fake_worker(args, profile, **kwargs):
+        assert kwargs["comfy_args"][0] == "--output-directory"
+        kwargs["prepare_volume"](object())
+        events.append("worker")
+        yield FakeComfy()
+
+    monkeypatch.setattr(cli.Profile, "load", lambda path: _profile())
+    monkeypatch.setattr(cli, "RunArtifacts", FakeArtifacts)
+    monkeypatch.setattr(cli, "_worker_session", fake_worker)
+    args = build_parser().parse_args(
+        [
+            "run",
+            str(workflow),
+            "--apply",
+            "--image",
+            f"{image}:input.png",
+            "--output",
+            str(tmp_path / "output"),
+        ]
+    )
+
+    cli.run(args)
+
+    assert events == ["artifacts", "stage", "worker", "queue", "publish"]
 
 
 def test_scene_parser_accepts_stop_pod_and_rejects_keep_pod_combination() -> None:
@@ -1637,6 +1756,9 @@ def test_worker_session_reuses_and_restarts_existing_pod(
         def __exit__(self, *_: object) -> None:
             pass
 
+        def find_volume(self, **kwargs):
+            return {"id": "volume-1", "size": 1, "dataCenterId": "US-MO-1"}
+
         def wait_until_running(self, pod_id: str, *, timeout_seconds: int):
             events.append(f"reuse:{pod_id}")
             return {
@@ -1667,7 +1789,7 @@ def test_worker_session_reuses_and_restarts_existing_pod(
         def wait_for_ssh(self) -> None:
             events.append("ssh")
 
-        def ensure_models(self, models: tuple[object, ...], aliases: tuple = ()) -> None:
+        def verify_models(self, models: tuple[object, ...], aliases: tuple = ()) -> None:
             assert models == ()
             assert aliases == ()
             events.append("models")
@@ -1690,9 +1812,25 @@ def test_worker_session_reuses_and_restarts_existing_pod(
             events.append("close")
 
     monkeypatch.setenv("RUNPOD_API_KEY", "key")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "s3-user")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "s3-secret")
     monkeypatch.setattr(cli, "RunPodClient", FakeRunPodClient)
     monkeypatch.setattr(cli, "RemoteWorker", FakeRemoteWorker)
     monkeypatch.setattr(cli, "ComfyClient", FakeComfyClient)
+    monkeypatch.setattr(cli, "NetworkVolumeStorage", lambda **kwargs: object())
+
+    class FakeCache:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def require_complete(self, models):
+            events.append("preflight")
+            return Namespace(fingerprint="cache-fingerprint")
+
+    monkeypatch.setattr(cli, "_model_cache", lambda volume, profile: FakeCache())
     profile = _profile()
     args = Namespace(
         ssh_key=str(ssh_key),
@@ -1703,10 +1841,14 @@ def test_worker_session_reuses_and_restarts_existing_pod(
         stop_pod=stop_pod,
     )
 
-    with cli._worker_session(args, profile):
+    with cli._worker_session(
+        args,
+        profile,
+        prepare_volume=lambda storage: events.append("stage"),
+    ):
         events.append("yield")
 
-    expected = []
+    expected = ["preflight", "stage"]
     if initial_status == "EXITED":
         expected.append("start:pod-1")
     expected.extend(["reuse:pod-1", "ssh", "models", "restart", "yield", "close"])

@@ -1,0 +1,3 @@
+# This image installs system packages only; exclude all project and model data.
+**
+!Dockerfile

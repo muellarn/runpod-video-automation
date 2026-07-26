@@ -9,6 +9,7 @@ description = "Provision ephemeral RunPod ComfyUI workers and run video workflow
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "boto3>=1.43,<2",
     "httpx>=0.28,<1",
     "websocket-client>=1.8,<2",
 ]

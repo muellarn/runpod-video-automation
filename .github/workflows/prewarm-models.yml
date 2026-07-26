@@ -1,0 +1,54 @@
+---
+name: Prewarm model cache
+
+'on':
+  workflow_dispatch:
+    inputs:
+      include_refiner:
+        description: Include the prompt-refiner runtime and GGUF model
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prewarm-models
+  cancel-in-progress: false
+
+jobs:
+  prewarm:
+    name: Stream models to RunPod storage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_S3_ACCESS_KEY_ID: ${{ secrets.RUNPOD_S3_ACCESS_KEY_ID }}
+      RUNPOD_S3_SECRET_ACCESS_KEY: ${{ secrets.RUNPOD_S3_SECRET_ACCESS_KEY }}
+      RUNPOD_VIDEO_PROFILE: profiles/wan22-i2v-fp8.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
+        with:
+          version: 0.8.22
+          enable-cache: true
+
+      - name: Validate required secrets
+        run: |
+          test -n "$RUNPOD_API_KEY"
+          test -n "$RUNPOD_S3_ACCESS_KEY_ID"
+          test -n "$RUNPOD_S3_SECRET_ACCESS_KEY"
+
+      - name: Prewarm default model groups
+        env:
+          INCLUDE_REFINER: ${{ inputs.include_refiner }}
+        run: |
+          args=(setup --apply)
+          if test "$INCLUDE_REFINER" = true; then
+            args+=(--include-refiner)
+          fi
+          uv run runpod-video "${args[@]}"

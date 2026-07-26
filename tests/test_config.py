@@ -207,11 +207,12 @@ def test_wan_profile_loads() -> None:
         "e48bbd5b7bc496de4e91741639ce8d09d74f2fd308a99be6378208fd2e0707b5"
     )
     assert all(model.size for model in (*video.models, *start_image.models))
+    assert all(model.sha256 for model in (*video.models, *start_image.models))
     assert video.adapter == "wan22_i2v"
     assert start_image.adapter == "z_image_turbo"
     assert image_edit.adapter == "qwen_image_edit_2511"
     assert profile.default_model_groups == ("wan22-i2v", "z-image-turbo")
     assert profile.gpu_type_ids[0] == "NVIDIA H100 80GB HBM3"
     assert profile.max_hourly_cost == 3.5
-    assert profile.system_packages == ("gcc", "python3-dev")
+    assert profile.image == "ghcr.io/muellarn/runpod-video-automation:main"
     assert profile.comfy_args == ("--enable-triton-backend",)
