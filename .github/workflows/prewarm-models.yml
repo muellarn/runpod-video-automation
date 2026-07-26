@@ -2,6 +2,9 @@
 name: Prewarm model cache
 
 'on':
+  push:
+    paths:
+      - .github/workflows/prewarm-models.yml
   workflow_dispatch:
     inputs:
       include_refiner:
@@ -20,6 +23,7 @@ concurrency:
 jobs:
   prewarm:
     name: Stream models to RunPod storage
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
