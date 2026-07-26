@@ -1,4 +1,5 @@
 import hashlib
+from threading import Barrier
 from typing import Any
 
 import httpx
@@ -18,12 +19,14 @@ class FakeStorage:
         self.objects: dict[str, bytes] = {}
         self.uploads: dict[str, list[bytes]] = {}
         self.aborted = False
+        self.json_writes: list[str] = []
 
     def get_json(self, key: str):
         return self.json.get(key)
 
     def put_json(self, key: str, value: dict[str, Any]) -> None:
         self.json[key] = value
+        self.json_writes.append(key)
 
     def object_size(self, key: str):
         value = self.objects.get(key)
@@ -45,10 +48,15 @@ class FakeStorage:
         self.aborted = True
 
 
-def _model(data: bytes, *, checksum: str | None = None) -> ModelFile:
+def _model(
+    data: bytes,
+    *,
+    checksum: str | None = None,
+    path: str = "models/model.bin",
+) -> ModelFile:
     return ModelFile(
         "https://example.test/model",
-        "models/model.bin",
+        path,
         len(data),
         checksum or hashlib.sha256(data).hexdigest(),
     )
@@ -110,3 +118,29 @@ def test_checksum_mismatch_aborts_multipart_upload() -> None:
 def test_cache_plan_requires_pinned_integrity_metadata() -> None:
     with pytest.raises(ValueError, match="pinned size and SHA-256"):
         build_cache_plan((ModelFile("https://example.test/model", "models/model"),))
+
+
+def test_prewarm_uploads_models_in_parallel_and_commits_marker_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _model(b"first", path="models/first.bin")
+    second = _model(b"second", path="models/second.bin")
+    data = {first.path: b"first", second.path: b"second"}
+    barrier = Barrier(2)
+    storage = FakeStorage()
+    cache = ModelCache(
+        storage,
+        source_client=httpx.Client(),
+        max_parallel_uploads=2,
+    )
+
+    def upload(model: ModelFile) -> None:
+        barrier.wait(timeout=2)
+        storage.objects[model.path] = data[model.path]
+
+    monkeypatch.setattr(cache, "_upload_model", upload)
+
+    plan = cache.prewarm((first, second))
+
+    assert storage.json_writes[-1] == plan.marker_key
+    assert cache.require_complete((first, second)) == plan

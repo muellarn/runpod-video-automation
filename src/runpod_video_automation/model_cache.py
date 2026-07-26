@@ -5,6 +5,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -60,7 +61,10 @@ class ModelCache:
         *,
         source_client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        max_parallel_uploads: int = 3,
     ) -> None:
+        if max_parallel_uploads < 1:
+            raise ValueError("max_parallel_uploads must be positive")
         self.storage = storage
         self._source_client = source_client or httpx.Client(
             follow_redirects=True,
@@ -68,6 +72,7 @@ class ModelCache:
         )
         self._owns_source_client = source_client is None
         self._sleep = sleep
+        self._max_parallel_uploads = max_parallel_uploads
 
     def close(self) -> None:
         if self._owns_source_client:
@@ -101,6 +106,7 @@ class ModelCache:
         plan, complete = self.status(models)
         if complete:
             return plan
+        pending: list[tuple[int, ModelFile]] = []
         for index, model in enumerate(plan.models, start=1):
             print(
                 f"Prewarm {index}/{len(plan.models)}: {model.path} "
@@ -110,10 +116,31 @@ class ModelCache:
             if self._object_is_verified(model):
                 print("  cached", flush=True)
                 continue
-            self._upload_model(model)
-            self.storage.put_json(_object_marker_key(model), _model_record(model))
+            pending.append((index, model))
+        workers = min(self._max_parallel_uploads, len(pending))
+        if workers:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures: dict[Future[None], ModelFile] = {
+                    executor.submit(
+                        self._prewarm_model, index, len(plan.models), model
+                    ): model
+                    for index, model in pending
+                }
+                try:
+                    for future in as_completed(futures):
+                        future.result()
+                except Exception:
+                    for future in futures:
+                        future.cancel()
+                    raise
         self.storage.put_json(plan.marker_key, _complete_marker(plan))
         return plan
+
+    def _prewarm_model(self, index: int, total: int, model: ModelFile) -> None:
+        print(f"  start {index}/{total}: {model.path}", flush=True)
+        self._upload_model(model)
+        self.storage.put_json(_object_marker_key(model), _model_record(model))
+        print(f"  ready {index}/{total}: {model.path}", flush=True)
 
     def _object_is_verified(self, model: ModelFile) -> bool:
         marker = self.storage.get_json(_object_marker_key(model))
@@ -136,7 +163,8 @@ class ModelCache:
                 etag = self.storage.upload_part(model.path, upload_id, number, body)
                 parts.append({"ETag": etag, "PartNumber": number})
                 print(
-                    f"  {min(end + 1, model.size) * 100 // model.size}%",
+                    f"  {model.path}: "
+                    f"{min(end + 1, model.size) * 100 // model.size}%",
                     flush=True,
                 )
             if digest.hexdigest() != model.sha256:
