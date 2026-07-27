@@ -95,12 +95,15 @@ class ModelCache:
 
     def require_complete(self, models: Iterable[ModelFile]) -> CachePlan:
         plan, complete = self.status(models)
-        if not complete:
-            raise ModelCacheIncomplete(
-                "Model cache is incomplete; run 'runpod-video setup --apply' "
-                f"before creating a GPU Pod (cache {plan.fingerprint[:12]})"
-            )
-        return plan
+        if complete:
+            return plan
+        if all(self._object_is_marked(model) for model in plan.models):
+            self.storage.put_json(plan.marker_key, _complete_marker(plan))
+            return plan
+        raise ModelCacheIncomplete(
+            "Model cache is incomplete; run 'runpod-video setup --apply' "
+            f"before creating a GPU Pod (cache {plan.fingerprint[:12]})"
+        )
 
     def prewarm(self, models: Iterable[ModelFile]) -> CachePlan:
         plan, complete = self.status(models)
@@ -143,12 +146,7 @@ class ModelCache:
         print(f"  ready {index}/{total}: {model.path}", flush=True)
 
     def _object_is_verified(self, model: ModelFile) -> bool:
-        marker = self.storage.get_json(_object_marker_key(model))
-        marked = (
-            marker == _model_record(model)
-            and self.storage.object_size(model.path) == model.size
-        )
-        if marked:
+        if self._object_is_marked(model):
             return True
         if self.storage.object_size(model.path) != model.size:
             return False
@@ -157,6 +155,12 @@ class ModelCache:
             return False
         self.storage.put_json(_object_marker_key(model), _model_record(model))
         return True
+
+    def _object_is_marked(self, model: ModelFile) -> bool:
+        return (
+            self.storage.get_json(_object_marker_key(model)) == _model_record(model)
+            and self.storage.object_size(model.path) == model.size
+        )
 
     def _upload_model(self, model: ModelFile) -> None:
         assert model.size is not None

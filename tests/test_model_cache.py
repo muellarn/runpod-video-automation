@@ -170,3 +170,24 @@ def test_prewarm_adopts_matching_unmarked_s3_object(
         f".runpod-video/model-objects/{model.sha256}.json",
         plan.marker_key,
     ]
+
+
+def test_require_complete_reconstructs_marker_for_verified_subset() -> None:
+    first = _model(b"first", path="models/first.bin")
+    second = _model(b"second", path="models/second.bin")
+    storage = FakeStorage()
+    storage.objects = {first.path: b"first", second.path: b"second"}
+    for model in (first, second):
+        storage.json[f".runpod-video/model-objects/{model.sha256}.json"] = {
+            "path": model.path,
+            "url": model.url,
+            "size": model.size,
+            "sha256": model.sha256,
+        }
+    cache = ModelCache(storage, source_client=httpx.Client())
+    subset = build_cache_plan((first,))
+
+    result = cache.require_complete((first,))
+
+    assert result == subset
+    assert storage.json_writes == [subset.marker_key]
